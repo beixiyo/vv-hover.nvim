@@ -1,155 +1,89 @@
-# vv-hover.nvim
+<h1 align="center">vv-hover.nvim</h1>
 
-一个基于鼠标位置的自动 LSP Hover 显示插件，兼容 LazyVim。
+<p align="center">
+  <em>基于鼠标位置的自动 LSP Hover — 悬停即显文档，可扩展 Provider</em>
+</p>
 
-## 特性
+<p align="center">
+  <img src="https://img.shields.io/badge/Neovim-0.10+-57A143?style=flat-square&logo=neovim&logoColor=white" alt="Requires Neovim 0.10+" />
+  <img src="https://img.shields.io/badge/Lua-2C2D72?style=flat-square&logo=lua&logoColor=white" alt="Lua" />
+  <img src="https://img.shields.io/badge/zero_deps-✓-2ea44f?style=flat-square" alt="Zero Dependencies" />
+</p>
 
-- 🖱️ **基于鼠标位置**：完全基于鼠标位置显示 hover，而不是光标位置
-- ⚡ **自动触发**：鼠标悬停在符号上停留一段时间后自动显示 LSP 文档
-- 🔧 **可扩展**：支持自定义内容提供者，不限于 LSP
-- ⏱️ **完整时序控制**：可配置延迟、防抖、节流、关闭延迟等
-- 🎨 **单一职责架构**：模块化设计，易于维护和扩展
-- 🔒 **竞态安全**：使用 token 机制解决异步请求竞态问题
+---
 
 ## 安装
-
-lazy.nvim：
 
 ```lua
 {
   'beixiyo/vv-hover.nvim',
   event = 'VeryLazy',
-  opts = {},
+  ---@type HoverConfig
+  opts = {
+    enabled = true,
+
+    timing = {
+      hover_delay = 500,       -- 鼠标停留触发延迟（ms）
+      close_delay = 300,       -- 鼠标移开后延迟关闭（ms）
+      min_show_time = 0,       -- 最小显示时长（ms）
+    },
+
+    ui = {
+      border = 'rounded',      -- 边框样式
+      max_width = 80,
+      max_height = 20,
+      focusable = true,
+      zindex = 150,
+      relative = 'mouse',     -- 浮窗相对位置：'mouse' | 'cursor' | 'editor'
+    },
+
+    behavior = {
+      close_on_move = true,    -- 鼠标移出符号位置时自动关闭
+      close_on_insert = false, -- 进入插入模式时关闭
+      only_normal_buf = true,  -- 只在普通文件 buffer 中启用
+    },
+  },
 }
 ```
 
 ## 配置
 
-### 基础配置
+### 时序
+
+| 选项 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `timing.hover_delay` | `integer` | `500` | 鼠标悬停多久后触发 hover（ms） |
+| `timing.close_delay` | `integer` | `300` | 鼠标移开后延迟多久关闭浮窗（ms） |
+| `timing.min_show_time` | `integer` | `0` | 浮窗最小显示时长（ms），防闪烁 |
+
+### UI
+
+| 选项 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `ui.border` | `string` | `'rounded'` | 浮窗边框样式 |
+| `ui.max_width` | `integer` | `80` | 最大宽度 |
+| `ui.max_height` | `integer` | `20` | 最大高度 |
+| `ui.focusable` | `boolean` | `true` | 浮窗是否可聚焦 |
+| `ui.zindex` | `integer` | `150` | 浮窗层级 |
+| `ui.relative` | `string` | `'mouse'` | 浮窗定位基准：`'mouse'` / `'cursor'` / `'editor'` |
+
+### 行为
+
+| 选项 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `behavior.close_on_move` | `boolean` | `true` | 鼠标移出符号位置时自动关闭 |
+| `behavior.close_on_insert` | `boolean` | `false` | 进入插入模式时关闭 |
+| `behavior.only_normal_buf` | `boolean` | `true` | 只在普通文件 buffer 中启用（跳过 terminal / nofile 等） |
+| `provider` | `HoverProvider?` | `nil` | 自定义内容提供者（`nil` 使用默认 LSP provider），也可通过 `set_provider()` 设置 |
+
+### 自定义 Provider
+
+默认使用 LSP hover。可通过 `set_provider` 替换为自定义内容源：
 
 ```lua
-require("vv-hover").setup({
-  enabled = true,
-  
-  -- 时序配置
-  timing = {
-    hover_delay = 500,        -- 鼠标停留触发延迟（ms）
-    close_delay = 300,        -- 鼠标移开后延迟关闭时间（ms）
-    min_show_time = 0,        -- 最小显示时长（ms）
-  },
-  
-  -- UI 配置
-  ui = {
-    border = "rounded",       -- 边框样式
-    max_width = 80,           -- 最大宽度
-    max_height = 20,          -- 最大高度
-    focusable = true,         -- 是否可聚焦
-    zindex = 150,             -- 浮窗层级
-    relative = "mouse",       -- 浮窗相对位置：mouse | cursor | editor
-  },
-  
-  -- 行为配置
-  behavior = {
-    close_on_move = true,     -- 鼠标移出符号位置时自动关闭
-    close_on_insert = false,  -- 进入插入模式时关闭
-    only_normal_buf = true,   -- 只在普通文件 buffer 中启用
-  },
-})
-```
-
-### 自定义内容提供者
-
-你可以提供自定义函数来控制显示的内容：
-
-```lua
-local hover = require("vv-hover")
-
-hover.setup({
-  -- ... 其他配置
-})
-
--- 设置自定义 provider
-hover.set_provider(function(ctx)
-  -- ctx 包含：
-  --   bufnr: buffer 编号
-  --   winid: 窗口 ID
-  --   row: 行号（1-based）
-  --   col: 列号（1-based）
-  --   line_text: 当前行文本
-  --   mouse_pos: 鼠标位置信息
-  --   lsp_clients: LSP 客户端列表
-  
-  -- 返回显示内容
-  return {
-    lines = { "自定义内容", "第二行" },
-    filetype = "markdown",  -- 可选，默认 "markdown"
-  }
+require('vv-hover').set_provider(function(ctx, callback)
+  -- ctx: { bufnr, winid, row, col, line_text, mouse_pos, lsp_clients }
+  callback({ lines = { '自定义内容' }, filetype = 'markdown' })
+  return true -- 异步 provider 返回 true
 end)
 ```
-
-### 异步 Provider
-
-对于异步内容获取（如 LSP），provider 函数应该接受一个 callback：
-
-```lua
-hover.set_provider(function(ctx, callback)
-  -- 异步获取内容
-  some_async_function(ctx, function(result)
-    callback({
-      lines = result.lines,
-      filetype = result.filetype,
-    })
-  end)
-  
-  return true  -- 返回 true 表示这是异步 provider
-end)
-```
-
-## API
-
-### `setup(opts)`
-
-初始化并配置插件。
-
-### `enable()`
-
-启用插件。
-
-### `disable()`
-
-禁用插件。
-
-### `set_provider(fn)`
-
-设置自定义内容提供者。
-
-### `show()`
-
-手动显示 hover（基于当前鼠标位置）。
-
-### `hide()`
-
-手动关闭 hover。
-
-### `get_config()`
-
-获取当前配置。
-
-## 架构
-
-插件采用单一职责原则，分为以下模块：
-
-- **`init.lua`**：插件入口，提供公共 API
-- **`controller.lua`**：处理鼠标事件、定时器、状态管理
-- **`view.lua`**：负责浮窗的打开和关闭
-- **`providers/lsp.lua`**：默认 LSP 内容提供者
-
-## Testing
-
-Smoke test (zero deps, runs in `-u NONE`):
-
-```bash
-nvim --headless -u NONE -l tests/test_smoke.lua
-```
-
-Expected: trailing line `X passed, 0 failed`.
