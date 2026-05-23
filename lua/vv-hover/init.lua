@@ -8,80 +8,80 @@
 -- - 可自定义内容提供者（支持非 LSP 内容）
 -- - 完整的时序配置（延迟、防抖、节流等）
 -- - 单一职责的模块化架构
----@class HoverTimingConfig
----@field hover_delay integer   鼠标停留触发延迟（ms）
----@field close_delay integer   鼠标移开后延迟关闭时间（ms）
----@field min_show_time integer 最小显示时长（ms）
+---@class VVHoverTimingConfig
+---@field hover_delay integer   鼠标停留触发延迟（ms） @default 500
+---@field close_delay integer   鼠标移开后延迟关闭时间（ms） @default 300
+---@field min_show_time integer 最小显示时长（ms） @default 0
 
----@class HoverUIConfig
----@field border string
----@field max_width integer
----@field max_height integer
----@field focusable boolean
----@field zindex integer
----@field relative '"mouse"'|'"cursor"'|'"editor"'
+---@class VVHoverUIConfig
+---@field border string @default 'rounded'
+---@field max_width integer @default 80
+---@field max_height integer @default 20
+---@field focusable boolean @default true
+---@field zindex integer @default 150
+---@field relative '"mouse"'|'"cursor"'|'"editor"' @default 'mouse'
 
----@class HoverBehaviorConfig
----@field close_on_move boolean
----@field close_on_insert boolean
----@field only_normal_buf boolean
+---@class VVHoverBehaviorConfig
+---@field close_on_move boolean @default true
+---@field close_on_insert boolean @default false
+---@field only_normal_buf boolean @default true
 
----@class HoverProviderResult
+---@class VVHoverProviderResult
 ---@field lines string[]
 ---@field filetype string
 
----@class HoverMousePos
+---@class VVHoverMousePos
 ---@field winid integer
 ---@field line integer
 ---@field column integer
 
----@class HoverProviderCtx
+---@class VVHoverProviderCtx
 ---@field bufnr integer
 ---@field winid integer
 ---@field row integer
 ---@field col integer
 ---@field line_text string
----@field mouse_pos HoverMousePos
+---@field mouse_pos VVHoverMousePos
 ---@field lsp_clients vim.lsp.Client[]
 
----@alias HoverProvider fun(ctx: HoverProviderCtx, callback?:fun(result: HoverProviderResult|nil)): any
+---@alias VVHoverProvider fun(ctx: VVHoverProviderCtx, callback?:fun(result: VVHoverProviderResult|nil)): any
 
----@class HoverView
----@field setup fun(cfg: HoverConfig)
+---@class VVHoverView
+---@field setup fun(cfg: VVHoverConfig)
 ---@field open fun(lines: string[], filetype: string): (integer|nil, integer|nil)
 ---@field close fun()
 ---@field is_open fun(): boolean
----@field is_mouse_inside fun(pos: HoverMousePos|nil): boolean
+---@field is_mouse_inside fun(pos: VVHoverMousePos|nil): boolean
 ---@field scroll fun(direction: '"up"'|'"down"')
 
----@class HoverController
----@field setup fun(cfg: HoverConfig, view: HoverView, provider: HoverProvider)
+---@class VVHoverController
+---@field setup fun(cfg: VVHoverConfig, view: VVHoverView, provider: VVHoverProvider)
 ---@field enable fun()
 ---@field disable fun()
----@field set_provider fun(fn: HoverProvider)
+---@field set_provider fun(fn: VVHoverProvider)
 ---@field show fun()
 
----@class HoverConfig
----@field enabled boolean
----@field timing HoverTimingConfig
----@field ui HoverUIConfig
----@field behavior HoverBehaviorConfig
----@field provider HoverProvider|nil
+---@class VVHoverConfig
+---@field enabled boolean @default true
+---@field timing VVHoverTimingConfig
+---@field ui VVHoverUIConfig
+---@field behavior VVHoverBehaviorConfig
+---@field provider VVHoverProvider|nil @default nil
 
----@class HoverModule
----@field setup fun(opts?: HoverConfig)
+---@class VVHoverModule
+---@field setup fun(opts?: VVHoverConfig)
 ---@field enable fun()
 ---@field disable fun()
----@field set_provider fun(fn: HoverProvider)
+---@field set_provider fun(fn: VVHoverProvider)
 ---@field show fun()
 ---@field hide fun()
----@field get_config fun(): HoverConfig
+---@field get_config fun(): VVHoverConfig
 
----@type HoverModule
+---@type VVHoverModule
 local M = {}
 
 --- 默认配置
----@type HoverConfig
+---@type VVHoverConfig
 local default_config = {
   -- 基础开关
   enabled = true,
@@ -117,33 +117,22 @@ local default_config = {
 }
 
 -- 内部状态
----@type HoverConfig
+---@type VVHoverConfig
 local config = default_config
----@type HoverController|nil
+---@type VVHoverController|nil
 local controller = nil
----@type HoverView|nil
+---@type VVHoverView|nil
 local view = nil
----@type HoverProvider|nil
+---@type VVHoverProvider|nil
 local provider = nil
 
 ---设置插件配置
----@param opts HoverConfig|nil 配置选项
+---@param opts VVHoverConfig|nil 配置选项
 function M.setup(opts)
   opts = opts or {}
 
-  -- 合并配置
+  -- 合并配置（vim.tbl_deep_extend 已递归处理嵌套表）
   config = vim.tbl_deep_extend("force", default_config, opts)
-
-  -- 合并嵌套配置
-  if opts.timing then
-    config.timing = vim.tbl_deep_extend("force", default_config.timing, opts.timing)
-  end
-  if opts.ui then
-    config.ui = vim.tbl_deep_extend("force", default_config.ui, opts.ui)
-  end
-  if opts.behavior then
-    config.behavior = vim.tbl_deep_extend("force", default_config.behavior, opts.behavior)
-  end
 
   -- 初始化模块
   controller = require("vv-hover.controller")
@@ -165,6 +154,10 @@ function M.setup(opts)
   if config.enabled then
     M.enable()
   end
+
+  vim.api.nvim_create_user_command('VVHoverEnable', function() M.enable() end, {})
+  vim.api.nvim_create_user_command('VVHoverDisable', function() M.disable() end, {})
+  vim.api.nvim_create_user_command('VVHoverToggle', function() M.toggle() end, {})
 end
 
 ---启用插件
@@ -195,6 +188,16 @@ function M.show()
   if controller then
     controller.show()
   end
+end
+
+---切换启用/禁用
+function M.toggle()
+  if config.enabled then
+    M.disable()
+  else
+    M.enable()
+  end
+  config.enabled = not config.enabled
 end
 
 ---手动关闭 hover

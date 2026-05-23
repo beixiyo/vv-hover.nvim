@@ -6,11 +6,11 @@
 
 local M = {}
 
----@type HoverConfig|{}
+---@type VVHoverConfig|{}
 local config = {}
----@type HoverView|nil
+---@type VVHoverView|nil
 local view = nil
----@type HoverProvider|nil
+---@type VVHoverProvider|nil
 local provider = nil
 
 -- 内部状态

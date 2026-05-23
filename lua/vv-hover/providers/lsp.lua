@@ -4,7 +4,7 @@
 
 local M = {}
 
----@type HoverConfig|nil
+---@type VVHoverConfig|nil
 local config = nil
 
 ---创建 LSP provider
