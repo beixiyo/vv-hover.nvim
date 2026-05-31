@@ -11,7 +11,6 @@
 ---@class VVHoverTimingConfig
 ---@field hover_delay integer   鼠标停留触发延迟（ms） @default 500
 ---@field close_delay integer   鼠标移开后延迟关闭时间（ms） @default 300
----@field min_show_time integer 最小显示时长（ms） @default 0
 
 ---@class VVHoverUIConfig
 ---@field border string @default 'rounded'
@@ -58,6 +57,7 @@
 ---@field setup fun(cfg: VVHoverConfig, view: VVHoverView, provider: VVHoverProvider)
 ---@field enable fun()
 ---@field disable fun()
+---@field is_enabled fun(): boolean
 ---@field set_provider fun(fn: VVHoverProvider)
 ---@field show fun()
 
@@ -90,7 +90,6 @@ local default_config = {
   timing = {
     hover_delay = 500,        -- 鼠标停留触发延迟（ms）
     close_delay = 300,        -- 鼠标移开后延迟关闭时间（ms）
-    min_show_time = 0,        -- 最小显示时长（ms）
   },
 
   -- UI 配置
@@ -191,13 +190,14 @@ function M.show()
 end
 
 ---切换启用/禁用
+--- 以 controller 的真实状态为唯一来源，避免 enable/disable 不更新 config.enabled
+--- 导致的状态漂移（:VVHoverDisable 后 toggle 变成无操作的 bug）。
 function M.toggle()
-  if config.enabled then
+  if controller and controller.is_enabled() then
     M.disable()
   else
     M.enable()
   end
-  config.enabled = not config.enabled
 end
 
 ---手动关闭 hover

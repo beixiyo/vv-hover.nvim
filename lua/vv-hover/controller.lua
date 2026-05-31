@@ -152,6 +152,12 @@ function M.disable()
   active_hover_key = nil
 end
 
+---查询当前是否已启用（真实状态的唯一来源）
+---@return boolean
+function M.is_enabled()
+  return enabled
+end
+
 ---设置自定义 provider
 ---@param fn function provider 函数
 function M.set_provider(fn)
@@ -177,7 +183,12 @@ end
 ---@return table|nil
 function M._get_mouse_pos()
   local ok, pos = pcall(vim.fn.getmousepos)
-  if not ok or not pos or pos.winid == 0 then
+  if not ok or not pos then
+    return nil
+  end
+  -- 鼠标在状态栏 / 垂直分隔线上时，getmousepos 会返回 winid != 0 但 line == 0
+  -- 或 column == 0，此时构建出的 LSP 位置会是非法的 line = -1，需一并过滤。
+  if pos.winid == 0 or pos.line == 0 or pos.column == 0 then
     return nil
   end
   return pos
@@ -280,23 +291,25 @@ function M._start_hover_timer(key)
     hover_timer = nil
   end
   
-  -- 创建新定时器
-  hover_timer = vim.uv.new_timer()
-  hover_timer:start(config.timing.hover_delay, 0, vim.schedule_wrap(function()
+  -- 创建新定时器（捕获本地句柄 t，回调中只操作 t，避免误关已被替换的新定时器）
+  local t = vim.uv.new_timer()
+  hover_timer = t
+  t:start(config.timing.hover_delay, 0, vim.schedule_wrap(function()
     -- 检查鼠标位置是否仍然匹配
     local pos = M._get_mouse_pos()
-    if not pos then
-      return
+    if pos then
+      local current_key = M._make_mouse_key(pos)
+      if current_key == key then
+        M._trigger_hover(key)
+      end
     end
-    
-    local current_key = M._make_mouse_key(pos)
-    if current_key == key then
-      M._trigger_hover(key)
+
+    -- 只清理自己这个定时器句柄
+    if not t:is_closing() then
+      t:close()
     end
-    
-    -- 清理定时器
-    if hover_timer then
-      hover_timer:close()
+    -- 仅当模块变量仍指向自己时才置空，避免误清新定时器
+    if hover_timer == t then
       hover_timer = nil
     end
   end))
@@ -431,30 +444,36 @@ function M._schedule_close()
     return
   end
   
-  -- 创建延迟关闭定时器
-  close_timer = vim.uv.new_timer()
-  close_timer:start(config.timing.close_delay, 0, vim.schedule_wrap(function()
+  -- 创建延迟关闭定时器（捕获本地句柄 t，回调中只操作 t）
+  local t = vim.uv.new_timer()
+  close_timer = t
+  t:start(config.timing.close_delay, 0, vim.schedule_wrap(function()
     -- 检查鼠标是否已经移回
     local pos = M._get_mouse_pos()
     if pos then
       local key = M._make_mouse_key(pos)
       if key == active_hover_key then
-        -- 鼠标移回了，取消关闭
-        if close_timer then
-          close_timer:close()
+        -- 鼠标移回了，取消关闭：只清理自己这个句柄
+        if not t:is_closing() then
+          t:close()
+        end
+        if close_timer == t then
           close_timer = nil
         end
         return
       end
     end
-    
+
     if view then
       view.close()
     end
     active_hover_key = nil
-    
-    if close_timer then
-      close_timer:close()
+
+    -- 只清理自己这个定时器句柄
+    if not t:is_closing() then
+      t:close()
+    end
+    if close_timer == t then
       close_timer = nil
     end
   end))

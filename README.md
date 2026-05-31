@@ -25,7 +25,6 @@
     timing = {
       hover_delay = 500,       -- 鼠标停留触发延迟（ms）
       close_delay = 300,       -- 鼠标移开后延迟关闭（ms）
-      min_show_time = 0,       -- 最小显示时长（ms）
     },
 
     ui = {
@@ -54,7 +53,6 @@
 |------|------|--------|------|
 | `timing.hover_delay` | `integer` | `500` | 鼠标悬停多久后触发 hover（ms） |
 | `timing.close_delay` | `integer` | `300` | 鼠标移开后延迟多久关闭浮窗（ms） |
-| `timing.min_show_time` | `integer` | `0` | 浮窗最小显示时长（ms），防闪烁 |
 
 ### UI
 

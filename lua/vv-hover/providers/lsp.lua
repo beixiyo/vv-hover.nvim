@@ -15,6 +15,26 @@ function M.new(cfg)
   return M._get_hover_content
 end
 
+---构建 LSP position 参数
+---getmousepos 返回的 column 是 1-based 字节列；LSP 的 character 必须是 0-based。
+---因此先把 1-based 字节列转为 0-based 并 clamp，再做 UTF 编码换算。
+---@param ctx table 上下文信息（含 row、col、line_text）
+---@param encoding string LSP offset_encoding（如 'utf-8' / 'utf-16'）
+---@return table position { line = 0-based 行号, character = 0-based 字符索引 }
+function M._build_position(ctx, encoding)
+  local row = ctx.row
+  local line = ctx.line_text or ""
+
+  -- 1-based 字节列 -> 0-based 字节列，clamp 到 [0, #line]
+  local col = math.max((ctx.col or 1) - 1, 0)
+  col = math.min(col, #line)
+
+  return {
+    line = row - 1,
+    character = vim.str_utfindex(line, encoding, col),
+  }
+end
+
 ---获取 LSP hover 内容
 ---@param ctx table 上下文信息
 ---@param callback function 回调函数 function(result) -> nil
@@ -55,18 +75,10 @@ function M._get_hover_content(ctx, callback)
     return false
   end
 
-  -- 构建位置参数（LSP 使用 0-based 行号和 UTF-8 索引）
-  local row = ctx.row
-  local col = ctx.col
-  local line = ctx.line_text or ""
-  col = math.min(col, #line)
-
+  -- 构建位置参数（LSP 使用 0-based 行号和字符索引）
   local params = {
     textDocument = { uri = vim.uri_from_bufnr(ctx.bufnr) },
-    position = {
-      line = row - 1,
-      character = vim.str_utfindex(line, hover_client.offset_encoding, col),
-    },
+    position = M._build_position(ctx, hover_client.offset_encoding),
   }
 
   -- 发送 LSP 请求
