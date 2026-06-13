@@ -21,7 +21,6 @@ hover.setup({
   enabled = true,
   timing = {
     hover_delay = 500,
-    debounce_ms = 50,
     close_delay = 200,
   },
   ui = {

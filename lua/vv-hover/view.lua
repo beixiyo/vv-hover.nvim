@@ -19,25 +19,29 @@ end
 ---打开浮窗显示内容
 ---@param lines string[] 要显示的行内容
 ---@param filetype string|nil 文件类型（默认 "markdown"）
+---@param winid number|nil 鼠标所悬停的窗口 ID（用于让 open_floating_preview 的记账绑定到被悬停的 buffer 而非焦点 buffer）
 ---@return number|nil bufnr 创建的 buffer ID
 ---@return number|nil winid 创建的窗口 ID
-function M.open(lines, filetype)
+function M.open(lines, filetype, winid)
   if not lines or vim.tbl_isempty(lines) then
     return nil, nil
   end
-  
+
   filetype = filetype or "markdown"
-  
+
   -- 关闭旧浮窗
   M.close()
-  
+
   -- 裁剪空行
   lines = M._trim_empty_lines(lines)
   if vim.tbl_isempty(lines) then
     return nil, nil
   end
-  
+
   -- 构建浮窗选项
+  -- close_events 置空：本插件通过 current_win + 自有定时器管理生命周期，
+  -- 不依赖 open_floating_preview 默认的 {CursorMoved,...} 关闭 autocmd。
+  -- 否则鼠标驱动的浮窗会被焦点窗口里无关的 CursorMoved 误关。
   local opts = {
     border = config.ui.border,
     focusable = config.ui.focusable,
@@ -45,15 +49,34 @@ function M.open(lines, filetype)
     max_height = config.ui.max_height,
     relative = config.ui.relative,
     zindex = config.ui.zindex,
+    close_events = {},
   }
-  
+
   -- 打开浮窗
+  -- open_floating_preview 内部用 nvim_get_current_buf() 决定 b:lsp_floating_preview
+  -- 复用变量与各类记账。本插件是鼠标驱动的，被悬停的窗口未必是焦点窗口，
+  -- 因此在被悬停的窗口上下文里调用，让记账落到正确的 buffer。
   local util = vim.lsp.util
-  local bufnr_f, winid_f = util.open_floating_preview(lines, filetype, opts)
-  
+  local bufnr_f, winid_f
+  if winid and vim.api.nvim_win_is_valid(winid) then
+    vim.api.nvim_win_call(winid, function()
+      bufnr_f, winid_f = util.open_floating_preview(lines, filetype, opts)
+    end)
+  else
+    bufnr_f, winid_f = util.open_floating_preview(lines, filetype, opts)
+  end
+
+  -- 本插件不使用 open_floating_preview 的复用机制（自管 current_win），
+  -- 清掉它在源 buffer 上写下的 b:lsp_floating_preview，避免误触该 buffer 的 K 浮窗记账。
+  local src_winid = (winid and vim.api.nvim_win_is_valid(winid)) and winid or vim.api.nvim_get_current_win()
+  local src_bufnr = vim.api.nvim_win_get_buf(src_winid)
+  if vim.api.nvim_buf_is_valid(src_bufnr) then
+    pcall(vim.api.nvim_buf_del_var, src_bufnr, "lsp_floating_preview")
+  end
+
   current_bufnr = bufnr_f
   current_win = winid_f
-  
+
   return bufnr_f, winid_f
 end
 
@@ -113,8 +136,8 @@ function M.is_mouse_inside(mouse_pos)
   local has_border = config.ui.border ~= "none"
   local top = info.winrow - (has_border and 1 or 0)
   local left = info.wincol - (has_border and 1 or 0)
-  local bottom = info.winrow + info.height + (has_border and 1 or 0)
-  local right = info.wincol + info.width + (has_border and 1 or 0)
+  local bottom = info.winrow + info.height - 1 + (has_border and 1 or 0)
+  local right = info.wincol + info.width - 1 + (has_border and 1 or 0)
 
   return row >= top and row <= bottom and col >= left and col <= right
 end

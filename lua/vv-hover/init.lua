@@ -47,7 +47,7 @@
 
 ---@class VVHoverView
 ---@field setup fun(cfg: VVHoverConfig)
----@field open fun(lines: string[], filetype: string): (integer|nil, integer|nil)
+---@field open fun(lines: string[], filetype: string, winid?: integer): (integer|nil, integer|nil)
 ---@field close fun()
 ---@field is_open fun(): boolean
 ---@field is_mouse_inside fun(pos: VVHoverMousePos|nil): boolean

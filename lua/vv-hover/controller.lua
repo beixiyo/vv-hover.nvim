@@ -376,8 +376,8 @@ function M._trigger_hover(key)
     if current_key ~= key then
       return
     end
-    
-    M._show_hover_result(result, key, current_token)
+
+    M._show_hover_result(result, key, current_token, current_pos.winid)
   end
   
   -- 调用 provider：
@@ -393,7 +393,7 @@ function M._trigger_hover(key)
 
   -- 同步 provider：直接使用第一次调用的返回值
   if result and result.lines then
-    M._show_hover_result(result, key, current_token)
+    M._show_hover_result(result, key, current_token, winid)
   end
 end
 
@@ -401,26 +401,27 @@ end
 ---@param result table|nil hover 结果 { lines = string[], filetype = string }
 ---@param key string 鼠标位置 key
 ---@param token number 请求 token
-function M._show_hover_result(result, key, token)
+---@param winid number|nil 鼠标所悬停的窗口 ID（传给 view.open 以正确绑定记账 buffer）
+function M._show_hover_result(result, key, token, winid)
   -- 再次检查 token（双重保险）
   if token ~= request_token then
     return
   end
-  
+
   if not result or not result.lines or vim.tbl_isempty(result.lines) then
     return
   end
-  
+
   -- 关闭旧浮窗
   if view then
     view.close()
   end
-  
+
   -- 打开新浮窗
   if not view then
     return
   end
-  local bufnr_f, winid_f = view.open(result.lines, result.filetype)
+  local bufnr_f, winid_f = view.open(result.lines, result.filetype, winid)
   if bufnr_f and winid_f then
     active_hover_key = key
   end
