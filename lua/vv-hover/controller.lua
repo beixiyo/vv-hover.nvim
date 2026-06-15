@@ -30,6 +30,21 @@ local hover_augroup = nil
 -- 鼠标移动事件映射键
 local MOUSE_MOVE_KEY = "<MouseMove>"
 
+local function smooth_scroll_window(winid, direction)
+  local ok, scroll = pcall(require, 'vv-utils.scroll')
+  if ok and scroll and type(scroll.mouse) == 'function' and scroll.mouse(direction, winid) then
+    return
+  end
+
+  vim.api.nvim_win_call(winid, function()
+    if direction == "up" then
+      vim.cmd("normal! 3\25") -- \25 is <C-y>
+    else
+      vim.cmd("normal! 3\5")  -- \5 is <C-e>
+    end
+  end)
+end
+
 ---初始化 controller 模块
 ---@param cfg table 配置
 ---@param v table view 模块
@@ -266,18 +281,9 @@ function M._on_scroll(direction)
 
   -- 如果鼠标在某个有效的窗口内，就在该窗口内执行滚动（模拟原生鼠标滚动悬停窗口的行为）
   if pos and pos.winid and vim.api.nvim_win_is_valid(pos.winid) then
-    vim.api.nvim_win_call(pos.winid, function()
-      if direction == "up" then
-        vim.cmd("normal! 3\25") -- \25 is <C-y>
-      else
-        vim.cmd("normal! 3\5")  -- \5 is <C-e>
-      end
-    end)
+    smooth_scroll_window(pos.winid, direction)
   else
-    -- 兜底：在当前焦点窗口滚动
-    local key = direction == "up" and "3<C-Y>" or "3<C-E>"
-    local esc_key = vim.api.nvim_replace_termcodes(key, true, false, true)
-    vim.api.nvim_feedkeys(esc_key, "n", false)
+    smooth_scroll_window(vim.api.nvim_get_current_win(), direction)
   end
 end
 

@@ -349,6 +349,47 @@ do
   ok(rcontent ~= '' and rcontent:find('min_show_time') == nil, 'README 中无 min_show_time')
 end
 
+print('\n=== BUG #57: 普通窗口滚轮交给 vv-utils.scroll ===')
+do
+  local controller = dofile(root .. 'controller.lua')
+  local mock_view = {
+    setup = function() end,
+    open = function() return 1, 1 end,
+    close = function() end,
+    is_open = function() return false end,
+    is_mouse_inside = function() return false end,
+    scroll = function() end,
+  }
+
+  local mock_config = {
+    timing = { hover_delay = 500, close_delay = 300 },
+    ui = {},
+    behavior = { close_on_move = true, close_on_insert = false, only_normal_buf = true },
+  }
+
+  local old_scroll = package.loaded['vv-utils.scroll']
+  local called_direction = nil
+  local called_win = nil
+
+  package.loaded['vv-utils.scroll'] = {
+    mouse = function(direction, winid)
+      called_direction = direction
+      called_win = winid
+      return true
+    end,
+  }
+
+  controller.setup(mock_config, mock_view, function() end)
+  controller.enable()
+  controller._on_scroll('down')
+  controller.disable()
+
+  ok(called_direction == 'down', '普通窗口滚轮调用 vv-utils.scroll.mouse')
+  ok(called_win == vim.api.nvim_get_current_win(), '普通窗口滚轮传入当前窗口兜底')
+
+  package.loaded['vv-utils.scroll'] = old_scroll
+end
+
 print(string.format('\n结果：%d 通过，%d 失败\n', pass, fail))
 if fail > 0 then
   vim.cmd('cquit 1')
