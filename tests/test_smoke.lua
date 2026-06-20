@@ -202,7 +202,8 @@ do
     local content = f:read('*a')
     f:close()
 
-    ok(content:find('close_delay = 300') ~= nil, 'README 中 close_delay 为 300')
+    ok(content:find('hover_delay = 250') ~= nil, 'README 中 hover_delay 为 250（与 init.lua 默认一致）')
+    ok(content:find('close_delay = 50') ~= nil, 'README 中 close_delay 为 50')
     ok(content:find('focusable = true') ~= nil, 'README 中 focusable 为 true')
     ok(content:find('zindex = 150') ~= nil, 'README 中包含 zindex = 150')
     ok(content:find('debounce_ms') == nil, 'README 中已移除 debounce_ms')
@@ -255,7 +256,7 @@ end
 print('\n=== BUG #53: 定时器回调捕获本地句柄（无竞态）===')
 do
   -- 源码级断言：两个定时器（hover/close）都必须捕获本地句柄 t，
-  -- 且绝不能把 new_timer() 直接赋给 module 级变量（旧的竞态写法）。
+  -- 且绝不能把 new_timer() 直接赋给 module 级变量（旧的竞态写法）
   local f = io.open(root .. 'controller.lua', 'r')
   local content = f and f:read('*a') or ''
   if f then f:close() end
@@ -390,7 +391,104 @@ do
   package.loaded['vv-utils.scroll'] = old_scroll
 end
 
-print(string.format('\n结果：%d 通过，%d 失败\n', pass, fail))
+print('\n=== BUG #58: hover 向所有客户端发请求，取第一个非空结果 ===')
+do
+  local lsp = dofile(root .. 'providers/lsp.lua')
+
+  -- _has_content 过滤纯空白 / 空响应
+  ok(lsp._has_content({ '', '  ', 'x' }) == true, '_has_content：含非空白行 → true')
+  ok(lsp._has_content({ '', '   ' }) == false, '_has_content：全空白 → false')
+
+  local provider = lsp.new({ behavior = { only_normal_buf = false } })
+
+  -- 备份待 mock 的 API
+  local saved = {
+    get_clients = vim.lsp.get_clients,
+    buf_request_all = vim.lsp.buf_request_all,
+    convert = vim.lsp.util.convert_input_to_markdown_lines,
+    uri = vim.uri_from_bufnr,
+    valid = vim.api.nvim_buf_is_valid,
+  }
+
+  -- 模拟两个客户端：tailwindcss（排前，返回空）+ tsgo（返回内容）
+  local c1 = { id = 1, name = 'tailwindcss', offset_encoding = 'utf-16' }
+  local c2 = { id = 2, name = 'tsgo', offset_encoding = 'utf-8' }
+
+  vim.api.nvim_buf_is_valid = function() return true end
+  vim.uri_from_bufnr = function() return 'file:///x' end
+  vim.lsp.get_clients = function() return { c1, c2 } end
+  vim.lsp.util.convert_input_to_markdown_lines = function(contents) return contents.lines end
+  vim.lsp.buf_request_all = function(_, _, params, handler)
+    ok(type(params) == 'function', 'params 以函数式传入（每客户端按各自编码单独构建）')
+    handler({
+      [1] = { err = nil, result = { contents = { lines = {} } } },          -- 空
+      [2] = { err = nil, result = { contents = { lines = { 'TS DOC' } } } }, -- 有内容
+    })
+  end
+
+  local got = nil
+  local ret = provider(
+    { bufnr = 1, winid = 1000, row = 1, col = 1, line_text = 'abc' },
+    function(result) got = result end
+  )
+
+  ok(ret == true, 'provider 成功发起请求返回 true')
+  ok(got ~= nil and got.lines and got.lines[1] == 'TS DOC',
+    '跳过空响应的 tailwindcss，取到 tsgo 的内容（实际: ' .. vim.inspect(got) .. '）')
+
+  -- 还原
+  vim.lsp.get_clients = saved.get_clients
+  vim.lsp.buf_request_all = saved.buf_request_all
+  vim.lsp.util.convert_input_to_markdown_lines = saved.convert
+  vim.uri_from_bufnr = saved.uri
+  vim.api.nvim_buf_is_valid = saved.valid
+end
+
+print('\n=== BUG #59: M.focus 聚焦浮窗（键盘进窗）===')
+do
+  package.loaded['vv-hover'] = nil
+  package.loaded['vv-hover.controller'] = nil
+  package.loaded['vv-hover.view'] = nil
+  package.loaded['vv-hover.providers.lsp'] = nil
+
+  local hover = require('vv-hover')
+  local view = require('vv-hover.view')
+  hover.setup({ enabled = false })
+
+  -- 无浮窗时 focus 返回 false
+  local saved_get = view.get_current
+  view.get_current = function() return nil, nil end
+  ok(hover.focus() == false, '无浮窗时 focus 返回 false')
+
+  -- 造真实浮窗，mock view.get_current 指向它
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 'doc line' })
+  local fwin = vim.api.nvim_open_win(buf, false,
+    { relative = 'editor', row = 1, col = 1, width = 10, height = 1, focusable = true })
+  view.get_current = function() return fwin, buf end
+
+  local before = vim.api.nvim_get_current_win()
+  ok(hover.focus() == true, '浮窗存在时 focus 返回 true')
+  ok(vim.api.nvim_get_current_win() == fwin, 'focus 后当前窗切到浮窗')
+
+  local has_q = false
+  for _, m in ipairs(vim.api.nvim_buf_get_keymap(buf, 'n')) do
+    if m.lhs == 'q' then has_q = true break end
+  end
+  ok(has_q, '浮窗 buffer 装了 q 关闭键')
+
+  -- 还原 / 清理
+  pcall(vim.api.nvim_set_current_win, before)
+  pcall(vim.api.nvim_win_close, fwin, true)
+  pcall(vim.api.nvim_buf_delete, buf, { force = true })
+  view.get_current = saved_get
+  package.loaded['vv-hover'] = nil
+  package.loaded['vv-hover.controller'] = nil
+  package.loaded['vv-hover.view'] = nil
+  package.loaded['vv-hover.providers.lsp'] = nil
+end
+
+print(string.format('\n 结果：%d 通过，%d 失败\n', pass, fail))
 if fail > 0 then
   vim.cmd('cquit 1')
 end

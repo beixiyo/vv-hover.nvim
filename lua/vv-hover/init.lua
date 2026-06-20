@@ -9,8 +9,8 @@
 -- - 完整的时序配置（延迟、防抖、节流等）
 -- - 单一职责的模块化架构
 ---@class VVHoverTimingConfig
----@field hover_delay integer   鼠标停留触发延迟（ms） @default 500
----@field close_delay integer   鼠标移开后延迟关闭时间（ms） @default 300
+---@field hover_delay integer   鼠标停留触发延迟（ms） @default 250
+---@field close_delay integer   鼠标移开后延迟关闭时间（ms） @default 50
 
 ---@class VVHoverUIConfig
 ---@field border string @default 'rounded'
@@ -67,6 +67,7 @@
 ---@field ui VVHoverUIConfig
 ---@field behavior VVHoverBehaviorConfig
 ---@field provider VVHoverProvider|nil @default nil
+---@field keymap_focus string|false  聚焦悬停浮窗的全局键；false 则用原生 `<C-w>w` 进窗 @default false
 
 ---@class VVHoverModule
 ---@field setup fun(opts?: VVHoverConfig)
@@ -75,6 +76,7 @@
 ---@field set_provider fun(fn: VVHoverProvider)
 ---@field show fun()
 ---@field hide fun()
+---@field focus fun(): boolean
 ---@field get_config fun(): VVHoverConfig
 
 ---@type VVHoverModule
@@ -88,8 +90,8 @@ local default_config = {
 
   -- 时序配置
   timing = {
-    hover_delay = 500,        -- 鼠标停留触发延迟（ms）
-    close_delay = 300,        -- 鼠标移开后延迟关闭时间（ms）
+    hover_delay = 250,        -- 鼠标停留触发延迟（ms）
+    close_delay = 50,         -- 鼠标移开后延迟关闭时间（ms）
   },
 
   -- UI 配置
@@ -108,6 +110,9 @@ local default_config = {
     close_on_insert = false,  -- 进入插入模式时关闭
     only_normal_buf = true,   -- 只在普通文件 buffer 中启用
   },
+
+  -- 聚焦浮窗的全局键：false=用原生 <C-w>w 进窗；设字符串则注册该键直达聚焦
+  keymap_focus = false,
 
   -- 内容提供者：nil 表示使用默认 LSP provider
   -- 函数签名：function(ctx) -> { lines = string[], filetype = string } | nil
@@ -157,6 +162,12 @@ function M.setup(opts)
   vim.api.nvim_create_user_command('VVHoverEnable', function() M.enable() end, {})
   vim.api.nvim_create_user_command('VVHoverDisable', function() M.disable() end, {})
   vim.api.nvim_create_user_command('VVHoverToggle', function() M.toggle() end, {})
+  vim.api.nvim_create_user_command('VVHoverFocus', function() M.focus() end, {})
+
+  -- 可选「直达聚焦浮窗」全局键（单一生命周期，遵循 AGENTS.md setup 例外；默认 false 走原生 <C-w>w）
+  if type(config.keymap_focus) == "string" and config.keymap_focus ~= "" then
+    vim.keymap.set("n", config.keymap_focus, M.focus, { desc = "vv-hover: 聚焦悬停浮窗", silent = true })
+  end
 end
 
 ---启用插件
@@ -205,6 +216,31 @@ function M.hide()
   if view then
     view.close()
   end
+end
+
+---聚焦当前 hover 浮窗（若打开），进窗后可用 `<C-e>`/`<C-y>` 滚动、`v`+`y` 复制、`q`/`<Esc>` 关闭。
+--- 即便 `ui.focusable=false` 也能进（走 `nvim_set_current_win`）。
+---@return boolean focused 浮窗存在并已聚焦
+function M.focus()
+  if not view then
+    return false
+  end
+
+  local win, bufnr = view.get_current()
+  if not (win and vim.api.nvim_win_is_valid(win)) then
+    return false
+  end
+
+  -- close_events 置空 → 浮窗不会自动关，进窗后给 q/<Esc> 退出口
+  if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+    for _, key in ipairs({ "q", "<Esc>" }) do
+      pcall(vim.keymap.set, "n", key, function() M.hide() end,
+        { buffer = bufnr, nowait = true, silent = true, desc = "vv-hover: 关闭浮窗" })
+    end
+  end
+
+  vim.api.nvim_set_current_win(win)
+  return true
 end
 
 ---获取当前配置

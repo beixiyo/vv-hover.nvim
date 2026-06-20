@@ -2,8 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- 键盘进窗读 hover：新增 `M.focus()` 与 `:VVHoverFocus`，把当前浮窗（即便 `ui.focusable=false`，走 `nvim_set_current_win`）设为活动窗口，进窗后可 `<C-e>`/`<C-y>` 滚动、`v`+`y` 复制、`q`/`<Esc>` 关闭；新增 `keymap_focus` 配置项（默认 `false`，走原生 `<C-w>w`；设字符串则注册直达聚焦键）
+
+### Changed
+
+- 默认时序更跟手：`timing.hover_delay` 300 → 250、`timing.close_delay` 300 → 50（同步 README 与一致性测试）
+
 ### Fixed
 
+- LSP hover 多客户端只问第一个 → 静默失效：旧逻辑遍历 hover-capable 客户端时 `break` 选「第一个」就只问它一个。当 buffer 同时挂了 `tailwindcss`（id 小、排前，对普通代码恒返回 `null`）与 `tsgo`（真正有 hover）时，永远问到 tailwindcss、拿到空响应、`tsgo` 无机会，hover 整体失效；现改用 `vim.lsp.buf_request_all` 向**所有** hover-capable 客户端发请求（params 用函数式，按各客户端 `offset_encoding` 分别构建 0-based character），按客户端顺序取第一个非空结果，对齐原生 `vim.lsp.buf.hover`；新增 `M._has_content` 过滤纯空白响应
 - LSP hover 列号 off-by-one：`getmousepos` 的 column 是 1-based 字节列，却被原样当作 LSP `position.character`（须 0-based），导致每次 hover 取到鼠标右侧一个字符的符号；现抽出 `M._build_position` 把 1-based 字节列转 0-based 并 clamp 到 `[0,#line]` 再做 `str_utfindex`，`position.line = row-1` 不变
 - `hover_timer` / `close_timer` 的 `schedule_wrap` 回调读模块级变量来 close，若期间被新 move 替换了句柄，回调会误关「新的、仍在 pending」的定时器 → 丢 hover / 强关运行中定时器；现两处回调改为捕获本地句柄 `t`，只对 `t` 操作，且仅当模块变量仍 `== t` 时才置空
 - `M.toggle` 以 init 的 `config.enabled` 为准并翻转它，但 `M.enable/disable` 从不更新该字段（真实状态在 controller），`:VVHoverDisable` 后首次 `:VVHoverToggle` 变成无操作；现以 `controller.is_enabled()` 为唯一真相源，toggle 读真实状态
