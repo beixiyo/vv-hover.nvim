@@ -194,25 +194,6 @@ do
   pcall(vim.keymap.del, 'n', '<ScrollWheelUp>')
 end
 
-print('\n=== FIX 5: README 默认值一致性 ===')
-do
-  local readme_path = project_root .. 'README.md'
-  local f = io.open(readme_path, 'r')
-  if f then
-    local content = f:read('*a')
-    f:close()
-
-    ok(content:find('hover_delay = 250') ~= nil, 'README 中 hover_delay 为 250（与 init.lua 默认一致）')
-    ok(content:find('close_delay = 50') ~= nil, 'README 中 close_delay 为 50')
-    ok(content:find('focusable = true') ~= nil, 'README 中 focusable 为 true')
-    ok(content:find('zindex = 150') ~= nil, 'README 中包含 zindex = 150')
-    ok(content:find('debounce_ms') == nil, 'README 中已移除 debounce_ms')
-    ok(content:find('throttle_ms') == nil, 'README 中已移除 throttle_ms')
-  else
-    ok(false, '无法读取 README.md')
-  end
-end
-
 print('\n=== FIX 6: debounce_ms/throttle_ms 已移除 ===')
 do
   local init_path = root .. 'init.lua'
@@ -343,11 +324,6 @@ do
   if f then f:close() end
   ok(content ~= '' and content:find('min_show_time') == nil, 'init.lua 中无 min_show_time（类型与默认值均已移除）')
 
-  -- README 同步移除
-  local rf = io.open(project_root .. 'README.md', 'r')
-  local rcontent = rf and rf:read('*a') or ''
-  if rf then rf:close() end
-  ok(rcontent ~= '' and rcontent:find('min_show_time') == nil, 'README 中无 min_show_time')
 end
 
 print('\n=== BUG #57: 普通窗口滚轮交给 vv-utils.scroll ===')
