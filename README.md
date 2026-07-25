@@ -1,7 +1,7 @@
 <div align="center">
   <h1>vv-hover.nvim</h1>
   <p>English | <a href="./README.zh-CN.md">中文</a></p>
-  <img src="./docs/assets/vv-hover.png" alt="vv-hover demo" width="900" />
+  <img src="https://github.com/beixiyo/vv-hover.nvim/releases/download/assets-2026-07-25/vv-hover.png" alt="vv-hover demo" width="900" />
   <p>Want my Neovim config? See <a href="https://github.com/beixiyo/dotfiles">dotfiles</a></p>
   <em>Automatic LSP hover at the mouse position: reveal documentation by hovering and extend it with custom providers</em>
   <p>

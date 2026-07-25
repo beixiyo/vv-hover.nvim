@@ -1,7 +1,7 @@
 <div align="center">
   <h1>vv-hover.nvim</h1>
   <p><a href="./README.md">English</a> | 中文</p>
-  <img src="./docs/assets/vv-hover.png" alt="vv-hover 演示" width="900" />
+  <img src="https://github.com/beixiyo/vv-hover.nvim/releases/download/assets-2026-07-25/vv-hover.png" alt="vv-hover 演示" width="900" />
   <p>想要我的 Neovim 配置？查看 <a href="https://github.com/beixiyo/dotfiles">dotfiles</a></p>
   <em>基于鼠标位置的自动 LSP Hover — 悬停即显文档，可扩展 Provider</em>
   <p>
