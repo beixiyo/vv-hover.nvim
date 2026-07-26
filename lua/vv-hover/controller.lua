@@ -23,9 +23,9 @@ local request_token = 0 -- 用于解决竞态条件
 
 -- 保存原始状态（用于 disable 时恢复）
 local saved_mousemoveevent = nil
-local saved_scroll_up_map = nil
-local saved_scroll_down_map = nil
+local owned_mousemoveevent = nil
 local hover_augroup = nil
+local Mappings = require('vv-hover.mappings')
 
 -- 鼠标移动事件映射键
 local MOUSE_MOVE_KEY = "<MouseMove>"
@@ -66,23 +66,9 @@ function M.enable()
   -- 保存并启用鼠标移动事件
   saved_mousemoveevent = vim.o.mousemoveevent
   vim.o.mousemoveevent = true
+  owned_mousemoveevent = vim.o.mousemoveevent
 
-  -- 注册鼠标移动事件
-  pcall(vim.keymap.set, "n", MOUSE_MOVE_KEY, M._on_mouse_move, {
-    desc = "鼠标悬停自动显示 Hover",
-  })
-
-  -- 保存原始滚轮映射（用于 disable 时恢复）
-  saved_scroll_up_map = vim.fn.maparg("<ScrollWheelUp>", "n", false, true)
-  saved_scroll_down_map = vim.fn.maparg("<ScrollWheelDown>", "n", false, true)
-
-  -- 注册滚轮事件（用于滚动浮窗）
-  pcall(vim.keymap.set, "n", "<ScrollWheelUp>", function()
-    M._on_scroll("up")
-  end, { desc = "向上滚动 Hover 浮窗" })
-  pcall(vim.keymap.set, "n", "<ScrollWheelDown>", function()
-    M._on_scroll("down")
-  end, { desc = "向下滚动 Hover 浮窗" })
+  Mappings.install(M._on_mouse_move, M._on_scroll)
 
   -- 创建 augroup 并注册 autocmd
   hover_augroup = vim.api.nvim_create_augroup('VVHover', { clear = true })
@@ -98,29 +84,6 @@ function M.enable()
       end,
     })
   end
-end
-
----恢复之前保存的按键映射
----@param map table|nil maparg() 返回的映射信息
-local function restore_mapping(map)
-  if not map or vim.tbl_isempty(map) then
-    return
-  end
-  -- maparg(dict=true) 返回的 lhs 字段即为原始按键
-  local mode = map.mode or 'n'
-  local lhs = map.lhs
-  local rhs = map.rhs or map.callback
-  if not lhs or (not rhs and not map.callback) then
-    return
-  end
-  vim.keymap.set(mode, lhs, rhs, {
-    silent = map.silent == 1,
-    noremap = map.noremap == 1,
-    expr = map.expr == 1,
-    nowait = map.nowait == 1,
-    desc = map.desc,
-    buffer = (map.buffer and map.buffer ~= 0) and map.buffer or nil,
-  })
 end
 
 ---禁用插件
@@ -139,22 +102,14 @@ function M.disable()
     view.close()
   end
 
-  -- 移除鼠标移动事件映射
-  pcall(vim.keymap.del, "n", MOUSE_MOVE_KEY)
-
-  -- 恢复原始滚轮映射（而非直接删除）
-  pcall(vim.keymap.del, "n", "<ScrollWheelUp>")
-  pcall(vim.keymap.del, "n", "<ScrollWheelDown>")
-  restore_mapping(saved_scroll_up_map)
-  restore_mapping(saved_scroll_down_map)
-  saved_scroll_up_map = nil
-  saved_scroll_down_map = nil
+  Mappings.restore()
 
   -- 恢复 mousemoveevent 原始值
-  if saved_mousemoveevent ~= nil then
+  if saved_mousemoveevent ~= nil and vim.o.mousemoveevent == owned_mousemoveevent then
     vim.o.mousemoveevent = saved_mousemoveevent
-    saved_mousemoveevent = nil
   end
+  saved_mousemoveevent = nil
+  owned_mousemoveevent = nil
 
   -- 清理 augroup（移除所有 autocmd）
   if hover_augroup then

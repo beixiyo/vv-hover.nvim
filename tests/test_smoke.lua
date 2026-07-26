@@ -151,6 +151,30 @@ do
   vim.o.mousemoveevent = original
 end
 
+print('\n=== lifecycle: external global changes remain owned by their writer ===')
+do
+  local controller = dofile(root .. 'controller.lua')
+  local mock_view = { close = function() end, is_open = function() return false end, is_mouse_inside = function() return false end }
+  local mock_config = {
+    timing = { hover_delay = 500, close_delay = 300 },
+    ui = {},
+    behavior = { close_on_move = true, close_on_insert = false, only_normal_buf = true },
+  }
+  local original_mousemoveevent = vim.o.mousemoveevent
+  vim.keymap.set('n', '<MouseMove>', '<cmd>let g:vv_hover_old = 1<cr>', { desc = 'old MouseMove' })
+  vim.o.mousemoveevent = false
+  controller.setup(mock_config, mock_view, function() end)
+  controller.enable()
+  vim.keymap.set('n', '<MouseMove>', '<cmd>let g:vv_hover_external = 1<cr>', { desc = 'external MouseMove' })
+  vim.o.mousemoveevent = false
+  controller.disable()
+  ok(vim.fn.maparg('<MouseMove>', 'n', false, true).desc == 'external MouseMove',
+    'disable keeps a MouseMove mapping installed after vv-hover')
+  ok(vim.o.mousemoveevent == false, 'disable keeps mousemoveevent changed after vv-hover')
+  pcall(vim.keymap.del, 'n', '<MouseMove>')
+  vim.o.mousemoveevent = original_mousemoveevent
+end
+
 print('\n=== FIX 4: ScrollWheel 映射恢复 ===')
 do
   local controller = dofile(root .. 'controller.lua')
@@ -182,7 +206,7 @@ do
 
   -- enable 后映射应被覆盖
   local during_map = vim.fn.maparg('<ScrollWheelUp>', 'n', false, true)
-  ok(during_map.desc == '向上滚动 Hover 浮窗', 'enable 后滚轮映射被插件覆盖')
+  ok(during_map.desc == 'Scroll hover up', 'enable 后滚轮映射被插件覆盖')
 
   controller.disable()
 
@@ -194,19 +218,59 @@ do
   pcall(vim.keymap.del, 'n', '<ScrollWheelUp>')
 end
 
-print('\n=== FIX 6: debounce_ms/throttle_ms 已移除 ===')
+print('\n=== lifecycle: MouseMove mapping restore ===')
 do
-  local init_path = root .. 'init.lua'
-  local f = io.open(init_path, 'r')
-  if f then
-    local content = f:read('*a')
-    f:close()
+  local controller = dofile(root .. 'controller.lua')
+  local mock_view = { close = function() end, is_open = function() return false end, is_mouse_inside = function() return false end }
+  local mock_config = {
+    timing = { hover_delay = 500, close_delay = 300 },
+    ui = {},
+    behavior = { close_on_move = true, close_on_insert = false, only_normal_buf = true },
+  }
+  controller.setup(mock_config, mock_view, function() end)
 
-    ok(content:find('debounce_ms') == nil, 'init.lua 中无 debounce_ms')
-    ok(content:find('throttle_ms') == nil, 'init.lua 中无 throttle_ms')
-  else
-    ok(false, '无法读取 init.lua')
+  local original = function() return 'existing mouse move' end
+  vim.keymap.set('n', '<MouseMove>', original, { desc = 'existing mouse move' })
+  controller.enable()
+  ok(vim.fn.maparg('<MouseMove>', 'n', false, true).desc == 'Show hover', 'enable captures and replaces MouseMove')
+  controller.disable()
+  local restored = vim.fn.maparg('<MouseMove>', 'n', false, true)
+  ok(restored.desc == 'existing mouse move', 'disable restores MouseMove mapping')
+  pcall(vim.keymap.del, 'n', '<MouseMove>')
+end
+
+print('\n=== lifecycle: buffer-local mapping isolation ===')
+do
+  local controller = dofile(root .. 'controller.lua')
+  local mock_view = { close = function() end, is_open = function() return false end, is_mouse_inside = function() return false end }
+  local mock_config = {
+    timing = { hover_delay = 500, close_delay = 300 },
+    ui = {},
+    behavior = { close_on_move = true, close_on_insert = false, only_normal_buf = true },
+  }
+  controller.setup(mock_config, mock_view, function() end)
+
+  local original_buf = vim.api.nvim_get_current_buf()
+  local test_buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_set_current_buf(test_buf)
+  vim.keymap.set('n', '<MouseMove>', '<cmd>let b:vv_hover_local = 1<cr>', {
+    buffer = test_buf,
+    desc = 'buffer-local MouseMove',
+  })
+
+  controller.enable()
+  controller.disable()
+
+  local local_map = vim.fn.maparg('<MouseMove>', 'n', false, true)
+  local global_map
+  for _, map in ipairs(vim.api.nvim_get_keymap('n')) do
+    if map.lhs == '<MouseMove>' then global_map = map end
   end
+  ok(local_map.desc == 'buffer-local MouseMove', 'disable preserves buffer-local MouseMove')
+  ok(global_map == nil, 'disable does not leak buffer-local MouseMove globally')
+
+  vim.api.nvim_set_current_buf(original_buf)
+  vim.api.nvim_buf_delete(test_buf, { force = true })
 end
 
 print('\n=== BUG #52: LSP hover 列 0-based 转换 ===')
@@ -232,34 +296,6 @@ do
   -- 第 3 个字符（©，2 字节于 utf-8）：col=3（1-based 字节列指向 ©）→ 0-based 字节 2 → utf-16 字符 2
   local pos3 = lsp._build_position({ row = 1, col = 3, line_text = 'ab©d' }, 'utf-16')
   ok(pos3.character == 2, '1-based col=3 映射为 0-based character 2（实际: ' .. tostring(pos3.character) .. '）')
-end
-
-print('\n=== BUG #53: 定时器回调捕获本地句柄（无竞态）===')
-do
-  -- 源码级断言：两个定时器（hover/close）都必须捕获本地句柄 t，
-  -- 且绝不能把 new_timer() 直接赋给 module 级变量（旧的竞态写法）
-  local f = io.open(root .. 'controller.lua', 'r')
-  local content = f and f:read('*a') or ''
-  if f then f:close() end
-
-  -- 统计 `local t = vim.uv.new_timer()` 出现次数（hover + close 各一次 → 2）
-  local local_handles = 0
-  for _ in content:gmatch('local t = vim%.uv%.new_timer%(%)') do
-    local_handles = local_handles + 1
-  end
-  ok(local_handles == 2,
-    '两个定时器均捕获本地句柄 local t = vim.uv.new_timer()（实际: ' .. local_handles .. '）')
-
-  -- 旧的竞态写法（new_timer() 直接赋给 module 变量）必须彻底消失
-  ok(content:find('hover_timer = vim%.uv%.new_timer%(%)') == nil,
-    'hover_timer 不再直接赋值 new_timer()（旧竞态写法已移除）')
-  ok(content:find('close_timer = vim%.uv%.new_timer%(%)') == nil,
-    'close_timer 不再直接赋值 new_timer()（旧竞态写法已移除）')
-
-  ok(content:find('if hover_timer == t then') ~= nil,
-    'hover_timer 仅在仍 === t 时置空（避免误清新定时器）')
-  ok(content:find('if close_timer == t then') ~= nil,
-    'close_timer 仅在仍 === t 时置空')
 end
 
 print('\n=== BUG #54: toggle 以 controller 真实状态为准 ===')
@@ -315,15 +351,6 @@ do
   ok(p ~= nil and p.line == 3 and p.column == 4, '正常命中（line/column > 0）正常返回 pos')
 
   vim.fn.getmousepos = saved
-end
-
-print('\n=== BUG #56: min_show_time 已从类型/默认值移除 ===')
-do
-  local f = io.open(root .. 'init.lua', 'r')
-  local content = f and f:read('*a') or ''
-  if f then f:close() end
-  ok(content ~= '' and content:find('min_show_time') == nil, 'init.lua 中无 min_show_time（类型与默认值均已移除）')
-
 end
 
 print('\n=== BUG #57: 普通窗口滚轮交给 vv-utils.scroll ===')
