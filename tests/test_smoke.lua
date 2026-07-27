@@ -32,51 +32,6 @@ package.path = table.concat({
   package.path,
 }, ';')
 
-print('\n=== FIX 1: 同步 provider 不重复调用 ===')
-do
-  local controller = dofile(root .. 'controller.lua')
-  local call_count = 0
-  local sync_provider = function(ctx, _cb)
-    call_count = call_count + 1
-    return { lines = { 'hello' }, filetype = 'markdown' }
-  end
-
-  -- 构造最小 mock
-  local opened = false
-  local mock_view = {
-    setup = function() end,
-    open = function(lines, ft)
-      opened = true
-      return 1, 1
-    end,
-    close = function() opened = false end,
-    is_open = function() return opened end,
-    is_mouse_inside = function() return false end,
-    scroll = function() end,
-  }
-
-  local mock_config = {
-    timing = { hover_delay = 0, close_delay = 0 },
-    ui = {},
-    behavior = { close_on_move = false, close_on_insert = false, only_normal_buf = false },
-  }
-
-  controller.setup(mock_config, mock_view, sync_provider)
-
-  -- 直接调用内部 _trigger_hover 需要 mock getmousepos
-  -- 改为测试 provider 调用逻辑的核心：传入 (ctx, callback) 后，sync 返回 result，
-  -- 不应再被第二次调用
-  call_count = 0
-  local ctx = { bufnr = 0, winid = 0, row = 1, col = 1, line_text = '', mouse_pos = {}, lsp_clients = {} }
-  local cb_called = false
-  local callback = function() cb_called = true end
-  local result = sync_provider(ctx, callback)
-  -- 同步 provider 返回了 result（非 true），不应再调用第二次
-  ok(call_count == 1, '同步 provider 只调用了 1 次')
-  ok(result ~= true, '同步 provider 返回值不为 true')
-  ok(result and result.lines, '同步 provider 返回了有效结果')
-end
-
 print('\n=== FIX 2: InsertEnter autocmd 使用 augroup ===')
 do
   local controller = dofile(root .. 'controller.lua')
@@ -196,8 +151,7 @@ do
   controller.setup(mock_config, mock_view, function() end)
 
   -- 设置自定义滚轮映射
-  local up_called = false
-  vim.keymap.set('n', '<ScrollWheelUp>', function() up_called = true end, { desc = 'test scroll up' })
+  vim.keymap.set('n', '<ScrollWheelUp>', function() end, { desc = 'test scroll up' })
 
   local before_map = vim.fn.maparg('<ScrollWheelUp>', 'n', false, true)
   ok(before_map.desc == 'test scroll up', '自定义滚轮映射已设置')
@@ -311,6 +265,17 @@ do
   hover.setup({ enabled = true })
   ok(controller.is_enabled() == true, 'setup(enabled=true) 后 controller 已启用')
 
+  local gx_before = vim.fn.maparg('gx', 'n', false, true)
+  hover.setup({ enabled = true, keymap_focus = 'gx' })
+  hover.setup({ enabled = false, keymap_focus = 'gy' })
+  ok(controller.is_enabled() == false, '重复 setup 从 enabled=true 切到 false 会停用旧 controller')
+  local gx_after = vim.fn.maparg('gx', 'n', false, true)
+  ok(gx_after.rhs == gx_before.rhs and gx_after.callback == gx_before.callback and gx_after.desc == gx_before.desc,
+    '重复 setup 换键后精确归还旧 focus 映射')
+  ok(vim.fn.maparg('gy', 'n') ~= '', '重复 setup 换键后安装新 focus 映射')
+
+  hover.setup({ enabled = true })
+
   hover.disable()
   ok(controller.is_enabled() == false, 'disable 后 controller 已禁用')
 
@@ -331,20 +296,22 @@ do
   local controller = dofile(root .. 'controller.lua')
 
   local saved = vim.fn.getmousepos
+  ---@type any
+  local mock_fn = vim.fn
   -- 模拟状态栏命中：winid != 0 但 line == 0
-  vim.fn.getmousepos = function()
+  mock_fn.getmousepos = function()
     return { winid = 5, line = 0, column = 0, screenrow = 1, screencol = 1 }
   end
   ok(controller._get_mouse_pos() == nil, 'line==0/column==0 的命中返回 nil')
 
   -- 模拟仅 column == 0（垂直分隔线）
-  vim.fn.getmousepos = function()
+  mock_fn.getmousepos = function()
     return { winid = 5, line = 3, column = 0 }
   end
   ok(controller._get_mouse_pos() == nil, 'column==0 的命中返回 nil')
 
   -- 正常命中仍返回 pos
-  vim.fn.getmousepos = function()
+  mock_fn.getmousepos = function()
     return { winid = 5, line = 3, column = 4 }
   end
   local p = controller._get_mouse_pos()
@@ -417,11 +384,17 @@ do
   local c1 = { id = 1, name = 'tailwindcss', offset_encoding = 'utf-16' }
   local c2 = { id = 2, name = 'tsgo', offset_encoding = 'utf-8' }
 
-  vim.api.nvim_buf_is_valid = function() return true end
+  ---@type any
+  local mock_api = vim.api
+  ---@type any
+  local mock_lsp = vim.lsp
+  ---@type any
+  local mock_lsp_util = vim.lsp.util
+  mock_api.nvim_buf_is_valid = function() return true end
   vim.uri_from_bufnr = function() return 'file:///x' end
-  vim.lsp.get_clients = function() return { c1, c2 } end
-  vim.lsp.util.convert_input_to_markdown_lines = function(contents) return contents.lines end
-  vim.lsp.buf_request_all = function(_, _, params, handler)
+  mock_lsp.get_clients = function() return { c1, c2 } end
+  mock_lsp_util.convert_input_to_markdown_lines = function(contents) return contents.lines end
+  mock_lsp.buf_request_all = function(_, _, params, handler)
     ok(type(params) == 'function', 'params 以函数式传入（每客户端按各自编码单独构建）')
     handler({
       [1] = { err = nil, result = { contents = { lines = {} } } },          -- 空
@@ -457,10 +430,12 @@ do
   local hover = require('vv-hover')
   local view = require('vv-hover.view')
   hover.setup({ enabled = false })
+  ---@type any
+  local mock_view = view
 
   -- 无浮窗时 focus 返回 false
   local saved_get = view.get_current
-  view.get_current = function() return nil, nil end
+  mock_view.get_current = function() return nil, nil end
   ok(hover.focus() == false, '无浮窗时 focus 返回 false')
 
   -- 造真实浮窗，mock view.get_current 指向它
@@ -468,7 +443,7 @@ do
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 'doc line' })
   local fwin = vim.api.nvim_open_win(buf, false,
     { relative = 'editor', row = 1, col = 1, width = 10, height = 1, focusable = true })
-  view.get_current = function() return fwin, buf end
+  mock_view.get_current = function() return fwin, buf end
 
   local before = vim.api.nvim_get_current_win()
   ok(hover.focus() == true, '浮窗存在时 focus 返回 true')

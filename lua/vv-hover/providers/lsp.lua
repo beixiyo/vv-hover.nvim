@@ -4,7 +4,7 @@
 
 local M = {}
 
----@type VVHoverConfig|nil
+---@type VVHover.Config|nil
 local config = nil
 
 ---创建 LSP provider

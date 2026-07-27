@@ -4,13 +4,29 @@
 -- 单一职责：处理鼠标事件、定时器、状态管理
 -- 不处理内容获取或 UI 渲染
 
+---@class VVHover.Controller
+---@field setup fun(cfg: VVHover.Config, view: VVHover.View, provider: VVHover.Provider)
+---@field enable fun()
+---@field disable fun()
+---@field is_enabled fun(): boolean
+---@field set_provider fun(fn: VVHover.Provider)
+---@field show fun()
+---@field _get_mouse_pos fun(): VVHover.MousePos|nil
+---@field _make_mouse_key fun(pos: VVHover.MousePos): string
+---@field _on_mouse_move fun()
+---@field _on_scroll fun(direction: 'up'|'down')
+---@field _start_hover_timer fun(key: string)
+---@field _trigger_hover fun(key: string)
+---@field _show_hover_result fun(result: VVHover.ProviderResult|nil, key: string, token: integer, winid: integer)
+---@field _schedule_close fun()
+---@field _cleanup_timers fun()
 local M = {}
 
----@type VVHoverConfig|{}
+---@type VVHover.Config|{}
 local config = {}
----@type VVHoverView|nil
+---@type VVHover.View|nil
 local view = nil
----@type VVHoverProvider|nil
+---@type VVHover.Provider|nil
 local provider = nil
 
 -- 内部状态
@@ -26,9 +42,6 @@ local saved_mousemoveevent = nil
 local owned_mousemoveevent = nil
 local hover_augroup = nil
 local Mappings = require('vv-hover.mappings')
-
--- 鼠标移动事件映射键
-local MOUSE_MOVE_KEY = "<MouseMove>"
 
 local function smooth_scroll_window(winid, direction)
   local ok, scroll = pcall(require, 'vv-utils.scroll')
@@ -46,9 +59,9 @@ local function smooth_scroll_window(winid, direction)
 end
 
 ---初始化 controller 模块
----@param cfg table 配置
----@param v table view 模块
----@param p function provider 函数
+---@param cfg VVHover.Config 配置
+---@param v VVHover.View view 模块
+---@param p VVHover.Provider provider 函数
 function M.setup(cfg, v, p)
   config = cfg
   view = v

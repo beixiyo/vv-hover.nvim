@@ -4,6 +4,15 @@
 -- 单一职责：负责浮窗的打开和关闭
 -- 不处理事件、定时器或内容获取
 
+---@class VVHover.View
+---@field setup fun(cfg: VVHover.Config)
+---@field open fun(lines: string[], filetype: string, winid?: integer): integer|nil, integer|nil
+---@field close fun()
+---@field is_open fun(): boolean
+---@field get_current fun(): integer|nil, integer|nil
+---@field is_mouse_inside fun(pos: VVHover.MousePos|nil): boolean
+---@field scroll fun(direction: 'up'|'down')
+---@field _trim_empty_lines fun(lines: string[]): string[]
 local M = {}
 
 local config = {}
@@ -11,7 +20,7 @@ local current_win = nil
 local current_bufnr = nil
 
 ---初始化 view 模块
----@param cfg table 配置
+---@param cfg VVHover.Config 配置
 function M.setup(cfg)
   config = cfg
 end
@@ -106,7 +115,7 @@ function M.get_current()
 end
 
 ---检查鼠标是否在浮窗内
----@param mouse_pos table|nil 鼠标位置 { winid, line, column, screenrow, screencol }
+---@param mouse_pos VVHover.MousePos|nil 鼠标位置
 ---@return boolean
 function M.is_mouse_inside(mouse_pos)
   if not mouse_pos or not current_win or not vim.api.nvim_win_is_valid(current_win) then

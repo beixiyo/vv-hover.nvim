@@ -1,0 +1,46 @@
+---@class VVHover.TimingConfig
+---@field hover_delay integer 鼠标停留触发延迟（ms） @default 250
+---@field close_delay integer 鼠标移开后延迟关闭时间（ms） @default 50
+---@class VVHover.UIConfig
+---@field border string @default 'rounded'
+---@field max_width integer @default 80
+---@field max_height integer @default 20
+---@field focusable boolean @default true
+---@field zindex integer @default 150
+---@field relative 'mouse'|'cursor'|'editor' @default 'mouse'
+---@class VVHover.BehaviorConfig
+---@field close_on_move boolean @default true
+---@field close_on_insert boolean @default false
+---@field only_normal_buf boolean @default true
+---@class VVHover.ProviderResult
+---@field lines string[]
+---@field filetype string
+---@class VVHover.MousePos
+---@field winid integer
+---@field line integer
+---@field column integer
+---@field screenrow? integer
+---@field screencol? integer
+---@class VVHover.ProviderCtx
+---@field bufnr integer
+---@field winid integer
+---@field row integer
+---@field col integer
+---@field line_text string
+---@field mouse_pos VVHover.MousePos
+---@field lsp_clients vim.lsp.Client[]
+---@alias VVHover.Provider fun(ctx: VVHover.ProviderCtx, callback?:fun(result: VVHover.ProviderResult|nil)): any
+---@class VVHover.Config
+---@field enabled boolean @default true
+---@field timing VVHover.TimingConfig
+---@field ui VVHover.UIConfig
+---@field behavior VVHover.BehaviorConfig
+---@field provider VVHover.Provider|nil @default nil
+---@field keymap_focus string|false 聚焦悬停浮窗的全局键；false 则用原生 `<C-w>w` 进窗 @default false
+---@class VVHover.ConfigOptions
+---@field enabled? boolean @default true
+---@field timing? VVHover.TimingConfig
+---@field ui? VVHover.UIConfig
+---@field behavior? VVHover.BehaviorConfig
+---@field provider? VVHover.Provider|nil @default nil
+---@field keymap_focus? string|false 聚焦悬停浮窗的全局键；false 则用原生 `<C-w>w` 进窗 @default false

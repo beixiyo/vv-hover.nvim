@@ -4,6 +4,7 @@ local M = {}
 local saved = {}
 local owned = {}
 local installed = false
+local focus = { key = nil, saved = nil, owned = nil }
 
 local keys = { '<MouseMove>', '<ScrollWheelUp>', '<ScrollWheelDown>' }
 
@@ -60,6 +61,34 @@ function M.restore()
     owned[key] = nil
   end
   installed = false
+  M.restore_focus()
+end
+
+---Own the optional focus mapping with the same capture/restore rules as mouse maps.
+---@param key string|false
+---@param callback fun()
+function M.configure_focus(key, callback)
+  M.restore_focus()
+  if type(key) ~= 'string' or key == '' then return end
+
+  focus.key = key
+  focus.saved = get_global_map(key)
+  vim.keymap.set('n', key, callback, { desc = 'vv-hover: 聚焦悬停浮窗', silent = true })
+  focus.owned = get_global_map(key)
+end
+
+function M.restore_focus()
+  if not focus.key then return end
+  local current = get_global_map(focus.key)
+  if current and focus.owned
+      and current.callback == focus.owned.callback
+      and current.rhs == focus.owned.rhs
+      and current.desc == focus.owned.desc
+  then
+    pcall(vim.keymap.del, 'n', focus.key)
+    restore(focus.saved)
+  end
+  focus.key, focus.saved, focus.owned = nil, nil, nil
 end
 
 return M

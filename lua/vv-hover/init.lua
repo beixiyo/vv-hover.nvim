@@ -8,82 +8,21 @@
 -- - 可自定义内容提供者（支持非 LSP 内容）
 -- - 完整的时序配置（延迟、防抖、节流等）
 -- - 单一职责的模块化架构
----@class VVHoverTimingConfig
----@field hover_delay integer   鼠标停留触发延迟（ms） @default 250
----@field close_delay integer   鼠标移开后延迟关闭时间（ms） @default 50
-
----@class VVHoverUIConfig
----@field border string @default 'rounded'
----@field max_width integer @default 80
----@field max_height integer @default 20
----@field focusable boolean @default true
----@field zindex integer @default 150
----@field relative '"mouse"'|'"cursor"'|'"editor"' @default 'mouse'
-
----@class VVHoverBehaviorConfig
----@field close_on_move boolean @default true
----@field close_on_insert boolean @default false
----@field only_normal_buf boolean @default true
-
----@class VVHoverProviderResult
----@field lines string[]
----@field filetype string
-
----@class VVHoverMousePos
----@field winid integer
----@field line integer
----@field column integer
-
----@class VVHoverProviderCtx
----@field bufnr integer
----@field winid integer
----@field row integer
----@field col integer
----@field line_text string
----@field mouse_pos VVHoverMousePos
----@field lsp_clients vim.lsp.Client[]
-
----@alias VVHoverProvider fun(ctx: VVHoverProviderCtx, callback?:fun(result: VVHoverProviderResult|nil)): any
-
----@class VVHoverView
----@field setup fun(cfg: VVHoverConfig)
----@field open fun(lines: string[], filetype: string, winid?: integer): (integer|nil, integer|nil)
----@field close fun()
----@field is_open fun(): boolean
----@field is_mouse_inside fun(pos: VVHoverMousePos|nil): boolean
----@field scroll fun(direction: '"up"'|'"down"')
-
----@class VVHoverController
----@field setup fun(cfg: VVHoverConfig, view: VVHoverView, provider: VVHoverProvider)
+require('vv-hover.types')
+---@class VVHover.Module
+---@field setup fun(opts?: VVHover.ConfigOptions)
 ---@field enable fun()
 ---@field disable fun()
----@field is_enabled fun(): boolean
----@field set_provider fun(fn: VVHoverProvider)
----@field show fun()
-
----@class VVHoverConfig
----@field enabled boolean @default true
----@field timing VVHoverTimingConfig
----@field ui VVHoverUIConfig
----@field behavior VVHoverBehaviorConfig
----@field provider VVHoverProvider|nil @default nil
----@field keymap_focus string|false  聚焦悬停浮窗的全局键；false 则用原生 `<C-w>w` 进窗 @default false
-
----@class VVHoverModule
----@field setup fun(opts?: VVHoverConfig)
----@field enable fun()
----@field disable fun()
----@field set_provider fun(fn: VVHoverProvider)
+---@field set_provider fun(fn: VVHover.Provider)
 ---@field show fun()
 ---@field hide fun()
 ---@field focus fun(): boolean
----@field get_config fun(): VVHoverConfig
-
----@type VVHoverModule
+---@field get_config fun(): VVHover.Config
+---@field toggle fun()
 local M = {}
 
 --- 默认配置
----@type VVHoverConfig
+---@type VVHover.Config
 local default_config = {
   -- 基础开关
   enabled = true,
@@ -121,19 +60,19 @@ local default_config = {
 }
 
 -- 内部状态
----@type VVHoverConfig
+---@type VVHover.Config
 local config = default_config
----@type VVHoverController|nil
+---@type VVHover.Controller|nil
 local controller = nil
----@type VVHoverView|nil
+---@type VVHover.View|nil
 local view = nil
----@type VVHoverProvider|nil
-local provider = nil
-
 ---设置插件配置
----@param opts VVHoverConfig|nil 配置选项
+---@param opts VVHover.ConfigOptions|nil 配置选项
 function M.setup(opts)
   opts = opts or {}
+
+  if controller and controller.is_enabled() then controller.disable() end
+  require('vv-hover.mappings').restore_focus()
 
   -- 合并配置（vim.tbl_deep_extend 已递归处理嵌套表）
   config = vim.tbl_deep_extend("force", default_config, opts)
@@ -143,15 +82,17 @@ function M.setup(opts)
   view = require("vv-hover.view")
 
   -- 设置默认 provider（如果未指定）
-  if not config.provider then
-    local lsp_provider = require("vv-hover.providers.lsp")
-    provider = lsp_provider.new(config)
+  local next_provider ---@type VVHover.Provider
+  if config.provider then
+    next_provider = config.provider
   else
-    provider = config.provider
+    local lsp_provider = require("vv-hover.providers.lsp")
+    next_provider = lsp_provider.new(config)
   end
+  local resolved_provider = assert(next_provider)
 
   -- 初始化 controller 和 view
-  controller.setup(config, view, provider)
+  controller.setup(config, view, resolved_provider)
   view.setup(config)
 
   -- 如果启用，自动启动
@@ -159,15 +100,12 @@ function M.setup(opts)
     M.enable()
   end
 
-  vim.api.nvim_create_user_command('VVHoverEnable', function() M.enable() end, {})
-  vim.api.nvim_create_user_command('VVHoverDisable', function() M.disable() end, {})
-  vim.api.nvim_create_user_command('VVHoverToggle', function() M.toggle() end, {})
-  vim.api.nvim_create_user_command('VVHoverFocus', function() M.focus() end, {})
+  vim.api.nvim_create_user_command('VVHoverEnable', function() M.enable() end, { force = true })
+  vim.api.nvim_create_user_command('VVHoverDisable', function() M.disable() end, { force = true })
+  vim.api.nvim_create_user_command('VVHoverToggle', function() M.toggle() end, { force = true })
+  vim.api.nvim_create_user_command('VVHoverFocus', function() M.focus() end, { force = true })
 
-  -- 可选「直达聚焦浮窗」全局键（单一生命周期，遵循 AGENTS.md setup 例外；默认 false 走原生 <C-w>w）
-  if type(config.keymap_focus) == "string" and config.keymap_focus ~= "" then
-    vim.keymap.set("n", config.keymap_focus, M.focus, { desc = "vv-hover: 聚焦悬停浮窗", silent = true })
-  end
+  require('vv-hover.mappings').configure_focus(config.keymap_focus, M.focus)
 end
 
 ---启用插件
@@ -182,12 +120,12 @@ function M.disable()
   if controller then
     controller.disable()
   end
+  require('vv-hover.mappings').restore_focus()
 end
 
 ---设置自定义内容提供者
 ---@param fn function 内容提供者函数
 function M.set_provider(fn)
-  provider = fn
   if controller then
     controller.set_provider(fn)
   end
