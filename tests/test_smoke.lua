@@ -466,6 +466,80 @@ do
   package.loaded['vv-hover.providers.lsp'] = nil
 end
 
+print('\n=== lifecycle: disable invalidates queued timer and provider callbacks ===')
+do
+  local controller = dofile(root .. 'controller.lua')
+  local open_count = 0
+  local provider_count = 0
+  local pending_callback = nil
+  local mock_view = {
+    open = function()
+      open_count = open_count + 1
+      return 1, 1
+    end,
+    close = function() end,
+    is_open = function() return false end,
+    is_mouse_inside = function() return false end,
+    scroll = function() end,
+  }
+  local mock_config = {
+    timing = { hover_delay = 1, close_delay = 1 },
+    ui = {},
+    behavior = { close_on_move = true, close_on_insert = false, only_normal_buf = false },
+  }
+  local mouse_pos = {
+    winid = vim.api.nvim_get_current_win(),
+    line = 1,
+    column = 1,
+  }
+
+  controller.setup(mock_config, mock_view, function(_, callback)
+    provider_count = provider_count + 1
+    pending_callback = callback
+    return true
+  end)
+  controller._get_mouse_pos = function() return mouse_pos end
+  controller.enable()
+
+  local saved_new_timer = vim.uv.new_timer
+  local queued = nil
+  local fake_timer = {
+    closing = false,
+    start = function(_, _, _, callback) queued = callback end,
+    stop = function() end,
+    close = function(self) self.closing = true end,
+    is_closing = function(self) return self.closing end,
+  }
+  vim.uv.new_timer = function() return fake_timer end
+  controller._start_hover_timer(controller._make_mouse_key(mouse_pos))
+  controller.disable()
+  controller.enable()
+  queued()
+  vim.wait(20, function() return provider_count > 0 end)
+  vim.uv.new_timer = saved_new_timer
+
+  ok(provider_count == 0, 'disable 后旧代次 timer 在重新 enable 后仍不调用 provider')
+
+  controller._trigger_hover(controller._make_mouse_key(mouse_pos))
+  ok(provider_count == 1 and type(pending_callback) == 'function', '异步 provider 请求已发起')
+  local stale_provider_callback = pending_callback
+  controller.set_provider(function(_, callback)
+    provider_count = provider_count + 1
+    pending_callback = callback
+    return true
+  end)
+  stale_provider_callback({ lines = { 'stale provider' }, filetype = 'markdown' })
+  ok(open_count == 0, '更换 provider 后旧 provider callback 不打开浮窗')
+
+  controller._trigger_hover(controller._make_mouse_key(mouse_pos))
+  ok(provider_count == 2 and type(pending_callback) == 'function', '新 provider 请求已发起')
+  controller.disable()
+  controller.enable()
+  pending_callback({ lines = { 'stale' }, filetype = 'markdown' })
+  ok(open_count == 0, 'disable 后旧代次 provider callback 在重新 enable 后仍不打开浮窗')
+  controller.disable()
+end
+
 print(string.format('\n 结果：%d 通过，%d 失败\n', pass, fail))
 if fail > 0 then
   vim.cmd('cquit 1')
