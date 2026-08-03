@@ -11,16 +11,18 @@
 ---@field is_enabled fun(): boolean
 ---@field set_provider fun(fn: VVHover.Provider)
 ---@field show fun()
+---@field hide fun()
 ---@field _get_mouse_pos fun(): VVHover.MousePos|nil
 ---@field _make_mouse_key fun(pos: VVHover.MousePos): string
 ---@field _on_mouse_move fun()
 ---@field _on_scroll fun(direction: 'up'|'down')
 ---@field _start_hover_timer fun(key: string)
 ---@field _trigger_hover fun(key: string)
----@field _show_hover_result fun(result: VVHover.ProviderResult|nil, key: string, token: integer, winid: integer, generation: integer)
+---@field _show_hover_result fun(result: VVHover.ProviderResult|nil, key: string, request: vv-utils.async.Request, winid: integer, bufnr: integer)
 ---@field _schedule_close fun()
 ---@field _cleanup_timers fun()
 local M = {}
+local request_scope = require('vv-utils.async').scope({ cancel_previous = true })
 
 ---@type VVHover.Config|{}
 local config = {}
@@ -35,7 +37,8 @@ local hover_timer = nil
 local close_timer = nil
 local last_mouse_key = nil
 local active_hover_key = nil
-local request_token = 0 -- 用于解决竞态条件
+---@type table|nil
+local active_hover_owner = nil
 local lifecycle_generation = 0
 
 -- 保存原始状态（用于 disable 时恢复）
@@ -43,6 +46,36 @@ local saved_mousemoveevent = nil
 local owned_mousemoveevent = nil
 local hover_augroup = nil
 local Mappings = require('vv-hover.mappings')
+
+---@param pos VVHover.MousePos|nil
+---@return boolean
+local function is_source_mouse_pos(pos)
+  return pos ~= nil and pos.winid ~= 0 and pos.line ~= 0 and pos.column ~= 0
+end
+
+---@return VVHover.MousePos|nil
+local function get_raw_mouse_pos()
+  local ok, pos = pcall(vim.fn.getmousepos)
+  if not ok or not pos then
+    return nil
+  end
+  return pos
+end
+
+---@param owner table|nil 传入时只关闭该所有者标识对应的 hover
+---@return boolean closed
+local function close_active_hover(owner)
+  if owner and active_hover_owner ~= owner then
+    return false
+  end
+
+  if view then
+    view.close()
+  end
+  active_hover_key = nil
+  active_hover_owner = nil
+  return true
+end
 
 local function smooth_scroll_window(winid, direction)
   local ok, scroll = pcall(require, 'vv-utils.scroll')
@@ -64,6 +97,7 @@ end
 ---@param v VVHover.View view 模块
 ---@param p VVHover.Provider provider 函数
 function M.setup(cfg, v, p)
+  request_scope:cancel()
   config = cfg
   view = v
   provider = p
@@ -77,6 +111,7 @@ function M.enable()
 
   enabled = true
   lifecycle_generation = lifecycle_generation + 1
+  request_scope:invalidate()
 
   -- 保存并启用鼠标移动事件
   saved_mousemoveevent = vim.o.mousemoveevent
@@ -92,10 +127,7 @@ function M.enable()
     vim.api.nvim_create_autocmd("InsertEnter", {
       group = hover_augroup,
       callback = function()
-        M._cleanup_timers()
-        if view then
-          view.close()
-        end
+        M.hide()
       end,
     })
   end
@@ -109,15 +141,13 @@ function M.disable()
 
   enabled = false
   lifecycle_generation = lifecycle_generation + 1
-  request_token = request_token + 1
+  request_scope:cancel()
 
   -- 清理定时器
   M._cleanup_timers()
 
   -- 关闭浮窗
-  if view then
-    view.close()
-  end
+  close_active_hover()
 
   Mappings.restore()
 
@@ -136,7 +166,6 @@ function M.disable()
 
   -- 重置状态
   last_mouse_key = nil
-  active_hover_key = nil
 end
 
 ---查询当前是否已启用（真实状态的唯一来源）
@@ -146,10 +175,17 @@ function M.is_enabled()
 end
 
 ---设置自定义 provider
----@param fn function provider 函数
+---@param fn VVHover.Provider provider 函数
 function M.set_provider(fn)
-  request_token = request_token + 1
+  request_scope:cancel()
   provider = fn
+end
+
+---关闭 hover 并取消当前 provider 请求
+function M.hide()
+  request_scope:cancel()
+  M._cleanup_timers()
+  close_active_hover()
 end
 
 ---手动显示 hover（基于当前鼠标位置）
@@ -157,12 +193,12 @@ function M.show()
   if not enabled then
     return
   end
-  
+
   local pos = M._get_mouse_pos()
   if not pos then
     return
   end
-  
+
   local key = M._make_mouse_key(pos)
   M._trigger_hover(key)
 end
@@ -170,15 +206,11 @@ end
 ---获取鼠标位置
 ---@return table|nil
 function M._get_mouse_pos()
-  local ok, pos = pcall(vim.fn.getmousepos)
-  if not ok or not pos then
+  local pos = get_raw_mouse_pos()
+  if not is_source_mouse_pos(pos) then
     return nil
   end
-  -- 鼠标在状态栏 / 垂直分隔线上时，getmousepos 会返回 winid != 0 但 line == 0
-  -- 或 column == 0，此时构建出的 LSP 位置会是非法的 line = -1，需一并过滤。
-  if pos.winid == 0 or pos.line == 0 or pos.column == 0 then
-    return nil
-  end
+
   return pos
 end
 
@@ -194,32 +226,41 @@ function M._on_mouse_move()
   if not enabled then
     return
   end
-  
+
   local pos = M._get_mouse_pos()
   if not pos then
+    -- 鼠标从源码区移向浮窗时必然先经过边框，Neovim 此时给出 line/column = 0。
+    -- _get_mouse_pos() 仍须维持“仅有效源码位置”的契约，因此仅在这里取原始位置
+    -- 命中浮窗，避免 hover 在进入内容区前被关掉。
+    local raw_pos = get_raw_mouse_pos()
+    if view and view.is_open and view.is_open() and view.is_mouse_inside and view.is_mouse_inside(raw_pos) then
+      if close_timer then
+        close_timer:stop()
+        close_timer:close()
+        close_timer = nil
+      end
+      return
+    end
+
     -- 鼠标离开窗口：清理定时器并关闭 hover
+    request_scope:cancel()
     M._cleanup_timers()
     last_mouse_key = nil
-    if view then
-      view.close()
-    end
+    close_active_hover()
     return
   end
-  
-  local key = M._make_mouse_key(pos)
-  
-  -- 鼠标进入 hover 浮窗 UI 时，不要关闭/不要重触发
+
   if view and view.is_open and view.is_open() and view.is_mouse_inside and view.is_mouse_inside(pos) then
-    -- 鼠标在浮窗内，取消关闭定时器（如果存在）
     if close_timer then
       close_timer:stop()
       close_timer:close()
       close_timer = nil
     end
-    -- 不触发关闭逻辑，直接返回
     return
   end
-  
+
+  local key = M._make_mouse_key(pos)
+
   -- 鼠标从当前 hover 位置移开时
   if active_hover_key and key ~= active_hover_key then
     -- 如果有延迟关闭，则启动定时器
@@ -227,14 +268,15 @@ function M._on_mouse_move()
       M._schedule_close()
     end
   end
-  
+
   -- 位置未变化，不需要重置定时器（防抖）
   if last_mouse_key == key then
     return
   end
-  
+
+  request_scope:cancel()
   last_mouse_key = key
-  
+
   -- 启动 hover 定时器
   M._start_hover_timer(key)
 end
@@ -274,7 +316,7 @@ function M._start_hover_timer(key)
     hover_timer:close()
     hover_timer = nil
   end
-  
+
   -- 创建新定时器（捕获本地句柄 t，回调中只操作 t，避免误关已被替换的新定时器）
   local t = assert(vim.uv.new_timer())
   ---@cast t -nil
@@ -322,19 +364,19 @@ function M._trigger_hover(key)
   if not pos then
     return
   end
-  
+
   local winid = pos.winid
   local bufnr = vim.api.nvim_win_get_buf(winid)
-  
+
   -- buffer 校验
   if not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
-  
+
   if config.behavior.only_normal_buf and vim.bo[bufnr].buftype ~= "" then
     return
   end
-  
+
   -- 构建上下文
   local line_text = vim.api.nvim_buf_get_lines(bufnr, pos.line - 1, pos.line, true)[1] or ""
   local ctx = {
@@ -346,84 +388,76 @@ function M._trigger_hover(key)
     mouse_pos = pos,
     lsp_clients = vim.lsp.get_clients({ bufnr = bufnr }),
   }
-  
-  -- 生成请求 token（用于解决竞态条件）
-  request_token = request_token + 1
-  local current_token = request_token
-  local current_generation = lifecycle_generation
-  
+
   if not provider then
     return
   end
-  
+
+  local request = request_scope:begin()
+
   -- 调用 provider 获取内容
   -- provider 可能是：
   -- 1. 自定义函数：function(ctx) -> result | nil（同步）
-  -- 2. LSP provider：function(ctx, callback) -> boolean（异步，返回是否成功发起请求）
-  
+  -- 2. 异步 provider：function(ctx, callback) -> true, cancel?
+
   -- 定义回调函数
   local callback = function(result)
-    -- 检查 token 是否仍然有效（解决竞态条件）
-    if not enabled
-      or current_generation ~= lifecycle_generation
-      or current_token ~= request_token
-    then
-      return
-    end
-    
     -- 再次检查鼠标位置是否仍然匹配
     local current_pos = M._get_mouse_pos()
     if not current_pos then
+      request:finish()
       return
     end
     local current_key = M._make_mouse_key(current_pos)
-    if current_key ~= key then
+    if current_key ~= key or current_pos.winid ~= winid then
+      request:finish()
+      return
+    end
+    if not vim.api.nvim_win_is_valid(winid) or vim.api.nvim_win_get_buf(winid) ~= bufnr then
+      request:finish()
       return
     end
 
-    M._show_hover_result(result, key, current_token, current_pos.winid, current_generation)
+    M._show_hover_result(result, key, request, current_pos.winid, bufnr)
   end
-  
+
   -- 调用 provider：
   -- - 异步 provider：接受 (ctx, callback)，返回 true，结果通过 callback 返回
   -- - 同步 provider：接受 (ctx) 或 (ctx, callback)，不返回 true，直接返回结果
   -- 统一传入 (ctx, callback)，根据返回值判断类型，避免重复调用
-  local result = provider(ctx, callback)
+  local result, cancel = provider(ctx, callback)
 
   if result == true then
+    if type(cancel) == 'function' then request:set_cancel(cancel) end
     -- 异步 provider 已发起请求，等待 callback 回调
     return
   end
 
   -- 同步 provider：直接使用第一次调用的返回值
   if result and result.lines then
-    M._show_hover_result(result, key, current_token, winid, current_generation)
+    M._show_hover_result(result, key, request, winid, bufnr)
+  else
+    request:finish()
   end
 end
 
 ---显示 hover 结果
 ---@param result table|nil hover 结果 { lines = string[], filetype = string }
 ---@param key string 鼠标位置 key
----@param token number 请求 token
+---@param request vv-utils.async.Request 请求 scope token
 ---@param winid number|nil 鼠标所悬停的窗口 ID（传给 view.open 以正确绑定记账 buffer）
----@param generation integer 发起请求时的生命周期代次
-function M._show_hover_result(result, key, token, winid, generation)
-  -- 再次检查 token（双重保险）
-  if not enabled
-    or generation ~= lifecycle_generation
-    or token ~= request_token
-  then
-    return
-  end
+---@param bufnr integer 发起请求时的 buffer
+function M._show_hover_result(result, key, request, winid, bufnr)
+  if not request:finish() or not enabled then return end
+  if not winid or not vim.api.nvim_win_is_valid(winid) then return end
+  if vim.api.nvim_win_get_buf(winid) ~= bufnr then return end
 
   if not result or not result.lines or vim.tbl_isempty(result.lines) then
     return
   end
 
   -- 关闭旧浮窗
-  if view then
-    view.close()
-  end
+  close_active_hover()
 
   -- 打开新浮窗
   if not view then
@@ -432,6 +466,7 @@ function M._show_hover_result(result, key, token, winid, generation)
   local bufnr_f, winid_f = view.open(result.lines, result.filetype, winid)
   if bufnr_f and winid_f then
     active_hover_key = key
+    active_hover_owner = {}
   end
 end
 
@@ -444,16 +479,19 @@ function M._schedule_close()
     close_timer:close()
     close_timer = nil
   end
-  
-  -- 如果延迟时间为 0，立即关闭
-  if config.timing.close_delay == 0 then
-    if view then
-      view.close()
-    end
-    active_hover_key = nil
+
+  local closing_key = active_hover_key
+  local closing_owner = active_hover_owner
+  if not closing_key or not closing_owner then
     return
   end
-  
+
+  -- 如果延迟时间为 0，立即关闭
+  if config.timing.close_delay == 0 then
+    close_active_hover(closing_owner)
+    return
+  end
+
   -- 创建延迟关闭定时器（捕获本地句柄 t，回调中只操作 t）
   local t = assert(vim.uv.new_timer())
   ---@cast t -nil
@@ -470,11 +508,45 @@ function M._schedule_close()
       return
     end
 
-    -- 检查鼠标是否已经移回
+    -- 旧 hover 已被后继替换时，这个 timer 不得关闭后继 UI
+    if active_hover_owner ~= closing_owner then
+      if not t:is_closing() then
+        t:close()
+      end
+      if close_timer == t then
+        close_timer = nil
+      end
+      return
+    end
+
+    -- 检查鼠标是否已经移回旧 hover 的位置。_get_mouse_pos() 保留可替换的
+    -- 有效源码位置测试入口；只有它返回 nil 时才额外判断浮窗边框等原始坐标。
     local pos = M._get_mouse_pos()
+    if not pos then
+      local raw_pos = get_raw_mouse_pos()
+      if view and view.is_open and view.is_open() and view.is_mouse_inside and view.is_mouse_inside(raw_pos) then
+        -- 即使浮窗的 MouseMove 映射未先执行，到期时仍以实际命中区域为准。
+        if not t:is_closing() then
+          t:close()
+        end
+        if close_timer == t then
+          close_timer = nil
+        end
+        return
+      end
+    elseif view and view.is_open and view.is_open() and view.is_mouse_inside and view.is_mouse_inside(pos) then
+      if not t:is_closing() then
+        t:close()
+      end
+      if close_timer == t then
+        close_timer = nil
+      end
+      return
+    end
+
     if pos then
       local key = M._make_mouse_key(pos)
-      if key == active_hover_key then
+      if key == closing_key then
         -- 鼠标移回了，取消关闭：只清理自己这个句柄
         if not t:is_closing() then
           t:close()
@@ -486,10 +558,9 @@ function M._schedule_close()
       end
     end
 
-    if view then
-      view.close()
-    end
-    active_hover_key = nil
+    -- close timer 只拥有创建时已显示的 hover；新的 provider request
+    -- 由鼠标位置和生命周期事件管理，不能在这里取消共享 scope
+    close_active_hover(closing_owner)
 
     -- 只清理自己这个定时器句柄
     if not t:is_closing() then
@@ -508,7 +579,7 @@ function M._cleanup_timers()
     hover_timer:close()
     hover_timer = nil
   end
-  
+
   if close_timer then
     close_timer:stop()
     close_timer:close()

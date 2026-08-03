@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.2] - 2026-08-04
+
+### Changed
+
+- **自定义 provider**：异步 provider 可返回 `true, cancel?`。后续 hover 覆盖旧请求、手动隐藏、禁用以及配置允许时进入 Insert mode，都会调用该取消函数
+
+### Fixed
+
+- **关闭定时器竞态**：关闭定时器只处理创建时所属的 hover UI。旧 hover 的延迟关闭不再取消后继 provider
+
 ## [0.1.1] - 2026-07-26
 
 ### Fixed

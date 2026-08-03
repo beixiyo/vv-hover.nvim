@@ -15,6 +15,8 @@
 ---@class VVHover.ProviderResult
 ---@field lines string[]
 ---@field filetype string
+---@alias VVHover.ProviderCallback fun(result: VVHover.ProviderResult|nil)
+---@alias VVHover.ProviderCancel fun()
 ---@class VVHover.MousePos
 ---@field winid integer
 ---@field line integer
@@ -29,7 +31,9 @@
 ---@field line_text string
 ---@field mouse_pos VVHover.MousePos
 ---@field lsp_clients vim.lsp.Client[]
----@alias VVHover.Provider fun(ctx: VVHover.ProviderCtx, callback?:fun(result: VVHover.ProviderResult|nil)): any
+---内容 provider 契约：同步 provider 返回 `result|nil`；异步 provider 返回字面量
+---`true`，并可额外返回一个幂等的取消回调
+---@alias VVHover.Provider fun(ctx: VVHover.ProviderCtx, callback?: VVHover.ProviderCallback): VVHover.ProviderResult|true|nil, VVHover.ProviderCancel?
 ---@class VVHover.Config
 ---@field enabled boolean @default true
 ---@field timing VVHover.TimingConfig

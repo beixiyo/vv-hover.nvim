@@ -5,9 +5,9 @@
   <p>Want my Neovim config? See <a href="https://github.com/beixiyo/dotfiles">dotfiles</a></p>
   <em>Automatic LSP hover at the mouse position: reveal documentation by hovering and extend it with custom providers</em>
   <p>
-    <img src="https://img.shields.io/badge/Neovim-0.11+-57A143?style=flat-square&logo=neovim&logoColor=white" alt="Requires Neovim 0.11+" />
+    <img src="https://img.shields.io/badge/Neovim-0.12+-57A143?style=flat-square&logo=neovim&logoColor=white" alt="Requires Neovim 0.12+" />
     <img src="https://img.shields.io/badge/Lua-2C2D72?style=flat-square&logo=lua&logoColor=white" alt="Lua" />
-    <img src="https://img.shields.io/badge/zero_deps-✓-2ea44f?style=flat-square" alt="Zero Dependencies" />
+    <img src="https://img.shields.io/badge/depends-vv--utils.nvim-2ea44f?style=flat-square" alt="Depends on vv-utils.nvim" />
   </p>
 </div>
 
@@ -15,10 +15,13 @@
 
 ## Installation
 
+Requires Neovim 0.12 or newer
+
 ```lua
 {
   'beixiyo/vv-hover.nvim',
   event = 'VeryLazy',
+  dependencies = { 'beixiyo/vv-utils.nvim' },
   ---@type HoverConfig
   opts = {
     enabled = true,
@@ -91,12 +94,30 @@ To scroll with `<C-e>` and `<C-y>` without focusing the window, route those keys
 
 ### Custom provider
 
-The default provider uses LSP hover. Replace it with `set_provider` to supply another content source:
+The default provider uses LSP hover. A synchronous provider returns its result directly, or `nil` when it has no content:
+
+```lua
+require('vv-hover').set_provider(function(ctx)
+  -- ctx: { bufnr, winid, row, col, line_text, mouse_pos, lsp_clients }
+  return { lines = { 'Custom content' }, filetype = 'markdown' }
+end)
+```
+
+An asynchronous provider returns the literal `true`, delivers its result through the callback, and may return an idempotent physical cancel function as its second result:
 
 ```lua
 require('vv-hover').set_provider(function(ctx, callback)
-  -- ctx: { bufnr, winid, row, col, line_text, mouse_pos, lsp_clients }
-  callback({ lines = { 'Custom content' }, filetype = 'markdown' })
-  return true -- Return true for an asynchronous provider
+  local timer = vim.defer_fn(function()
+    callback({ lines = { 'Async content' }, filetype = 'markdown' })
+  end, 100)
+
+  return true, function()
+    if not timer:is_closing() then
+      timer:stop()
+      timer:close()
+    end
+  end
 end)
 ```
+
+`true` is reserved as the asynchronous sentinel; other truthy values are not treated as async. The controller calls the cancel function when a newer hover supersedes the request or the hover lifecycle closes. Cancellation is best-effort, so callbacks must still tolerate arriving after cancellation; the controller also rejects stale results logically.

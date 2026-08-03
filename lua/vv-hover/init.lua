@@ -54,7 +54,7 @@ local default_config = {
   keymap_focus = false,
 
   -- 内容提供者：nil 表示使用默认 LSP provider
-  -- 函数签名：function(ctx) -> { lines = string[], filetype = string } | nil
+  -- 同步返回 result|nil；异步返回 true, cancel? 并通过 callback 投递 result|nil
   -- ctx 包含：bufnr, winid, row, col, line_text, mouse_pos, lsp_clients
   provider = nil,
 }
@@ -124,7 +124,7 @@ function M.disable()
 end
 
 ---设置自定义内容提供者
----@param fn function 内容提供者函数
+---@param fn VVHover.Provider 内容提供者函数
 function M.set_provider(fn)
   if controller then
     controller.set_provider(fn)
@@ -151,9 +151,7 @@ end
 
 ---手动关闭 hover
 function M.hide()
-  if view then
-    view.close()
-  end
+  if controller then controller.hide() end
 end
 
 ---聚焦当前 hover 浮窗（若打开），进窗后可用 `<C-e>`/`<C-y>` 滚动、`v`+`y` 复制、`q`/`<Esc>` 关闭。

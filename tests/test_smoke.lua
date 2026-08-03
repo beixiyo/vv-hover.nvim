@@ -400,15 +400,17 @@ do
       [1] = { err = nil, result = { contents = { lines = {} } } },          -- 空
       [2] = { err = nil, result = { contents = { lines = { 'TS DOC' } } } }, -- 有内容
     })
+    return function() end
   end
 
   local got = nil
-  local ret = provider(
+  local ret, cancel = provider(
     { bufnr = 1, winid = 1000, row = 1, col = 1, line_text = 'abc' },
     function(result) got = result end
   )
 
   ok(ret == true, 'provider 成功发起请求返回 true')
+  ok(type(cancel) == 'function', 'provider 暴露 buf_request_all 的 cancel handle')
   ok(got ~= nil and got.lines and got.lines[1] == 'TS DOC',
     '跳过空响应的 tailwindcss，取到 tsgo 的内容（实际: ' .. vim.inspect(got) .. '）')
 
@@ -485,7 +487,7 @@ do
   local mock_config = {
     timing = { hover_delay = 1, close_delay = 1 },
     ui = {},
-    behavior = { close_on_move = true, close_on_insert = false, only_normal_buf = false },
+    behavior = { close_on_move = true, close_on_insert = true, only_normal_buf = false },
   }
   local mouse_pos = {
     winid = vim.api.nvim_get_current_win(),
@@ -537,7 +539,244 @@ do
   controller.enable()
   pending_callback({ lines = { 'stale' }, filetype = 'markdown' })
   ok(open_count == 0, 'disable 后旧代次 provider callback 在重新 enable 后仍不打开浮窗')
+
+  local cancel_count = 0
+  controller.set_provider(function(_, callback)
+    provider_count = provider_count + 1
+    pending_callback = callback
+    return true, function() cancel_count = cancel_count + 1 end
+  end)
+  controller._trigger_hover(controller._make_mouse_key(mouse_pos))
+  local queued_after_insert = pending_callback
+  vim.api.nvim_exec_autocmds('InsertEnter', {})
+  ok(cancel_count == 1, 'InsertEnter 物理取消在途 provider')
+  queued_after_insert({ lines = { 'queued after cancel' }, filetype = 'markdown' })
+  ok(open_count == 0, 'InsertEnter 后已入队 callback 不复活 hover UI')
   controller.disable()
+end
+
+print('\n=== lifecycle: latest hover wins and buffer ownership is preserved ===')
+do
+  local controller = dofile(root .. 'controller.lua')
+  local callbacks = {}
+  local opened = nil
+  local mock_view = {
+    open = function(lines)
+      opened = lines[1]
+      return 1, 1
+    end,
+    close = function() end,
+    is_open = function() return false end,
+    is_mouse_inside = function() return false end,
+    scroll = function() end,
+  }
+  local mock_config = {
+    timing = { hover_delay = 1, close_delay = 1 },
+    ui = {},
+    behavior = { close_on_move = true, close_on_insert = false, only_normal_buf = false },
+  }
+  local win = vim.api.nvim_get_current_win()
+  local original_buf = vim.api.nvim_win_get_buf(win)
+  local mouse_pos = { winid = win, line = 1, column = 1 }
+
+  controller.setup(mock_config, mock_view, function(_, callback)
+    callbacks[#callbacks + 1] = callback
+    return true
+  end)
+  controller._get_mouse_pos = function() return mouse_pos end
+  controller.enable()
+
+  local key = controller._make_mouse_key(mouse_pos)
+  controller._trigger_hover(key)
+  controller._trigger_hover(key)
+  callbacks[2]({ lines = { 'new' }, filetype = 'markdown' })
+  callbacks[1]({ lines = { 'old' }, filetype = 'markdown' })
+  ok(opened == 'new', 'A 慢 B 快时旧 provider 不覆盖新 hover')
+
+  controller._trigger_hover(key)
+  local changed_buffer_callback = callbacks[3]
+  local replacement = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_win_set_buf(win, replacement)
+  changed_buffer_callback({ lines = { 'wrong buffer' }, filetype = 'markdown' })
+  ok(opened == 'new', 'window 的 buffer 更换后旧 provider 不打开 UI')
+
+  controller.disable()
+  vim.api.nvim_win_set_buf(win, original_buf)
+  vim.api.nvim_buf_delete(replacement, { force = true })
+end
+
+print('\n=== lifecycle: old close timer does not cancel the successor provider ===')
+do
+  local controller = dofile(root .. 'controller.lua')
+  local callbacks = {}
+  local cancel_counts = {}
+  local timers = {}
+  local opened = nil
+  local close_count = 0
+  local mouse_pos = {
+    winid = vim.api.nvim_get_current_win(),
+    line = 1,
+    column = 1,
+  }
+  local mock_view = {
+    open = function(lines)
+      opened = lines[1]
+      return 1, 1
+    end,
+    close = function()
+      opened = nil
+      close_count = close_count + 1
+    end,
+    is_open = function() return opened ~= nil end,
+    is_mouse_inside = function() return false end,
+    scroll = function() end,
+  }
+  local mock_config = {
+    timing = { hover_delay = 0, close_delay = 50 },
+    ui = {},
+    behavior = { close_on_move = true, close_on_insert = false, only_normal_buf = false },
+  }
+
+  controller.setup(mock_config, mock_view, function(_, callback)
+    local index = #callbacks + 1
+    callbacks[index] = callback
+    cancel_counts[index] = 0
+    return true, function()
+      cancel_counts[index] = cancel_counts[index] + 1
+    end
+  end)
+  controller._get_mouse_pos = function() return vim.deepcopy(mouse_pos) end
+  controller.enable()
+
+  local saved_new_timer = vim.uv.new_timer
+  local saved_schedule_wrap = vim.schedule_wrap
+  vim.schedule_wrap = function(callback) return callback end
+  vim.uv.new_timer = function()
+    local timer = { closing = false }
+    function timer:start(_, _, callback)
+      self.callback = callback
+      timers[#timers + 1] = self
+    end
+    function timer:stop() end
+    function timer:close() self.closing = true end
+    function timer:is_closing() return self.closing end
+    return timer
+  end
+
+  local key_a = controller._make_mouse_key(mouse_pos)
+  controller._trigger_hover(key_a)
+  callbacks[1]({ lines = { 'A' }, filetype = 'markdown' })
+  ok(opened == 'A', 'A hover 已显示')
+  local closes_after_a = close_count
+
+  mouse_pos.column = 2
+  controller._on_mouse_move()
+  ok(#timers == 2, '移到 B 后同时建立 A close timer 与 B hover timer')
+  local close_a = timers[1]
+  local hover_b = timers[2]
+
+  hover_b.callback()
+  vim.wait(20, function() return callbacks[2] ~= nil end, 1)
+  ok(type(callbacks[2]) == 'function', 'B provider 在 A close timer 前启动')
+
+  close_a.callback()
+  vim.wait(20, function() return close_a.closing end, 1)
+  ok(close_count == closes_after_a + 1, 'A close timer 只关闭旧 hover UI')
+  ok(cancel_counts[2] == 0, 'A close timer 不物理取消 B provider')
+
+  callbacks[2]({ lines = { 'B' }, filetype = 'markdown' })
+  ok(opened == 'B', 'A close timer 到期后 B callback 仍能发布 hover')
+
+  local timer_count = #timers
+  mouse_pos.column = 3
+  controller._on_mouse_move()
+  local close_b = timers[timer_count + 1]
+  local hover_c = timers[timer_count + 2]
+  hover_c.callback()
+  vim.wait(20, function() return callbacks[3] ~= nil end, 1)
+  callbacks[3]({ lines = { 'C' }, filetype = 'markdown' })
+  local closes_after_c = close_count
+  close_b.callback()
+  vim.wait(20, function() return close_b.closing end, 1)
+  ok(opened == 'C', 'B 的旧 close timer 不关闭已经显示的 C hover')
+  ok(close_count == closes_after_c, '后继 UI 接管后旧 close timer 只释放自身')
+  ok(cancel_counts[3] == 0, 'B 的旧 close timer 不物理取消已完成的 C provider')
+
+  vim.uv.new_timer = saved_new_timer
+  vim.schedule_wrap = saved_schedule_wrap
+  controller.disable()
+end
+
+print('\n=== regression: floating-window border keeps hover alive ===')
+do
+  local controller = dofile(root .. 'controller.lua')
+  local source_winid = vim.api.nvim_get_current_win()
+  local hover_winid = 999
+  local source_pos = { winid = source_winid, line = 1, column = 1 }
+  local border_pos = {
+    winid = hover_winid,
+    line = 0,
+    column = 0,
+    screenrow = 5,
+    screencol = 12,
+  }
+  local mouse_pos = source_pos
+  local opened = false
+  local close_count = 0
+  local timer = nil
+  local mock_view = {
+    open = function() opened = true return 1, 1 end,
+    close = function()
+      opened = false
+      close_count = close_count + 1
+    end,
+    is_open = function() return opened end,
+    is_mouse_inside = function(pos) return pos and pos.winid == hover_winid end,
+    scroll = function() end,
+  }
+  local mock_config = {
+    timing = { hover_delay = 1, close_delay = 50 },
+    ui = {},
+    behavior = { close_on_move = true, close_on_insert = false, only_normal_buf = false },
+  }
+
+  local saved_getmousepos = vim.fn.getmousepos
+  local saved_new_timer = vim.uv.new_timer
+  local saved_schedule_wrap = vim.schedule_wrap
+  vim.fn.getmousepos = function() return vim.deepcopy(mouse_pos) end
+  vim.schedule_wrap = function(callback) return callback end
+  vim.uv.new_timer = function()
+    timer = { closing = false }
+    function timer:start(_, _, callback) self.callback = callback end
+    function timer:stop() end
+    function timer:close() self.closing = true end
+    function timer:is_closing() return self.closing end
+    return timer
+  end
+
+  controller.setup(mock_config, mock_view, function()
+    return { lines = { 'hover' }, filetype = 'markdown' }
+  end)
+  controller.enable()
+  controller._trigger_hover(controller._make_mouse_key(source_pos))
+  local closes_after_open = close_count
+  controller._schedule_close()
+
+  mouse_pos = border_pos
+  controller._on_mouse_move()
+  ok(opened and close_count == closes_after_open and timer and timer.closing,
+    '鼠标进入浮窗边框会取消 close timer，而不是关闭 hover')
+
+  -- 即使 MouseMove 映射未先执行，timer 到期时也要以边框命中为准。
+  controller._schedule_close()
+  timer.callback()
+  ok(opened and close_count == closes_after_open and timer.closing,
+    'close timer 到期时仍会保留鼠标已进入边框的 hover')
+
+  controller.disable()
+  vim.fn.getmousepos = saved_getmousepos
+  vim.uv.new_timer = saved_new_timer
+  vim.schedule_wrap = saved_schedule_wrap
 end
 
 print(string.format('\n 结果：%d 通过，%d 失败\n', pass, fail))

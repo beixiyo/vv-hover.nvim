@@ -1,5 +1,5 @@
 -- ================================
--- vv-hover.nvim - LSP Provider
+-- vv-hover.nvim - LSP provider 实现
 -- ================================
 
 local M = {}
@@ -8,8 +8,8 @@ local M = {}
 local config = nil
 
 ---创建 LSP provider
----@param cfg table 配置
----@return function provider 函数
+---@param cfg VVHover.Config 配置
+---@return VVHover.Provider provider 函数
 function M.new(cfg)
   config = cfg
   return M._get_hover_content
@@ -36,31 +36,32 @@ function M._build_position(ctx, encoding)
 end
 
 ---获取 LSP hover 内容
----@param ctx table 上下文信息
----@param callback function 回调函数 function(result) -> nil
----@return boolean 是否成功发起请求
+---@param ctx VVHover.ProviderCtx 上下文信息
+---@param callback VVHover.ProviderCallback 回调函数
+---@return true? started 成功发起请求时返回 true，否则返回 nil
+---@return VVHover.ProviderCancel? cancel 取消未完成的 LSP 请求
 function M._get_hover_content(ctx, callback)
   if not ctx or not ctx.bufnr or not ctx.winid then
-    return false
+    return nil
   end
 
   if not config then
-    return false
+    return nil
   end
 
   -- buffer 校验
   if not vim.api.nvim_buf_is_valid(ctx.bufnr) then
-    return false
+    return nil
   end
 
   if config.behavior.only_normal_buf and vim.bo[ctx.bufnr].buftype ~= "" then
-    return false
+    return nil
   end
 
   -- 获取支持 hover 的 LSP 客户端（遍历时按 clients 顺序保证确定性）
   local clients = vim.lsp.get_clients({ bufnr = ctx.bufnr, method = "textDocument/hover" })
   if not clients or #clients == 0 then
-    return false
+    return nil
   end
 
   -- 向【所有】hover-capable 客户端发请求，对齐原生 vim.lsp.buf.hover
@@ -75,7 +76,7 @@ function M._get_hover_content(ctx, callback)
     }
   end
 
-  vim.lsp.buf_request_all(ctx.bufnr, "textDocument/hover", make_params, function(results)
+  local cancel = vim.lsp.buf_request_all(ctx.bufnr, "textDocument/hover", make_params, function(results)
     local util = vim.lsp.util
 
     -- 按 clients 顺序取第一个非空结果（pairs 顺序不确定，遍历 clients 保确定性）
@@ -96,7 +97,7 @@ function M._get_hover_content(ctx, callback)
     callback(nil)
   end)
 
-  return true
+  return true, cancel
 end
 
 ---判断 markdown 行是否含有效内容（过滤纯空白 / 空响应）

@@ -5,9 +5,9 @@
   <p>想要我的 Neovim 配置？查看 <a href="https://github.com/beixiyo/dotfiles">dotfiles</a></p>
   <em>基于鼠标位置的自动 LSP Hover — 悬停即显文档，可扩展 Provider</em>
   <p>
-  <img src="https://img.shields.io/badge/Neovim-0.11+-57A143?style=flat-square&logo=neovim&logoColor=white" alt="Requires Neovim 0.11+" />
+  <img src="https://img.shields.io/badge/Neovim-0.12+-57A143?style=flat-square&logo=neovim&logoColor=white" alt="Requires Neovim 0.12+" />
   <img src="https://img.shields.io/badge/Lua-2C2D72?style=flat-square&logo=lua&logoColor=white" alt="Lua" />
-  <img src="https://img.shields.io/badge/zero_deps-✓-2ea44f?style=flat-square" alt="Zero Dependencies" />
+  <img src="https://img.shields.io/badge/depends-vv--utils.nvim-2ea44f?style=flat-square" alt="依赖 vv-utils.nvim" />
   </p>
 </div>
 
@@ -15,10 +15,13 @@
 
 ## 安装
 
+要求 Neovim 0.12 或更高版本
+
 ```lua
 {
   'beixiyo/vv-hover.nvim',
   event = 'VeryLazy',
+  dependencies = { 'beixiyo/vv-utils.nvim' },
   ---@type HoverConfig
   opts = {
     enabled = true,
@@ -94,12 +97,30 @@
 
 ### 自定义 Provider
 
-默认使用 LSP hover。可通过 `set_provider` 替换为自定义内容源：
+默认使用 LSP hover。同步 provider 直接返回结果，没有内容时返回 `nil`：
+
+```lua
+require('vv-hover').set_provider(function(ctx)
+  -- ctx: { bufnr, winid, row, col, line_text, mouse_pos, lsp_clients }
+  return { lines = { '自定义内容' }, filetype = 'markdown' }
+end)
+```
+
+异步 provider 返回字面量 `true`，通过 callback 投递结果，并可把幂等的物理取消函数作为第二个返回值：
 
 ```lua
 require('vv-hover').set_provider(function(ctx, callback)
-  -- ctx: { bufnr, winid, row, col, line_text, mouse_pos, lsp_clients }
-  callback({ lines = { '自定义内容' }, filetype = 'markdown' })
-  return true -- 异步 provider 返回 true
+  local timer = vim.defer_fn(function()
+    callback({ lines = { '异步内容' }, filetype = 'markdown' })
+  end, 100)
+
+  return true, function()
+    if not timer:is_closing() then
+      timer:stop()
+      timer:close()
+    end
+  end
 end)
 ```
+
+`true` 是专用的异步标记，其他 truthy 值不会被当成异步。新 hover 覆盖旧请求或 hover 生命周期关闭时，controller 会调用 cancel；物理取消只能尽力而为，因此 callback 仍需容忍取消后已经排队的晚到调用，controller 也会用逻辑 token 拒绝过期结果
