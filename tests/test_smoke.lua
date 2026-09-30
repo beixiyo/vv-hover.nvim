@@ -317,6 +317,18 @@ do
   local p = controller._get_mouse_pos()
   ok(p ~= nil and p.line == 3 and p.column == 4, '正常命中（line/column > 0）正常返回 pos')
 
+  -- 行尾之后的空白：getmousepos 给出 column = #line + 1，不得视为源码位置
+  local win = vim.api.nvim_get_current_win()
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_win_set_buf(win, buf)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 'foo(bar)', '' })
+  mock_fn.getmousepos = function() return { winid = win, line = 1, column = 9 } end
+  ok(controller._get_mouse_pos() == nil, '行尾之后的空白返回 nil，不触发 hover')
+  mock_fn.getmousepos = function() return { winid = win, line = 2, column = 1 } end
+  ok(controller._get_mouse_pos() == nil, '空行返回 nil')
+  mock_fn.getmousepos = function() return { winid = win, line = 1, column = 8 } end
+  ok(controller._get_mouse_pos() ~= nil, '行内最后一个字符仍是源码位置')
+
   vim.fn.getmousepos = saved
 end
 
@@ -767,11 +779,76 @@ do
   ok(opened and close_count == closes_after_open and timer and timer.closing,
     '鼠标进入浮窗边框会取消 close timer，而不是关闭 hover')
 
-  -- 即使 MouseMove 映射未先执行，timer 到期时也要以边框命中为准。
+  -- 即使 MouseMove 映射未先执行，timer 到期时也要以边框命中为准
   controller._schedule_close()
   timer.callback()
   ok(opened and close_count == closes_after_open and timer.closing,
     'close timer 到期时仍会保留鼠标已进入边框的 hover')
+
+  controller.disable()
+  vim.fn.getmousepos = saved_getmousepos
+  vim.uv.new_timer = saved_new_timer
+  vim.schedule_wrap = saved_schedule_wrap
+end
+
+print('\n=== regression: 行尾之后的空白不触发 hover，旧 hover 延迟关闭 ===')
+do
+  local controller = dofile(root .. 'controller.lua')
+  local source_winid = vim.api.nvim_get_current_win()
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_win_set_buf(source_winid, buf)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { 'foo(bar)' })
+  local source_pos = { winid = source_winid, line = 1, column = 1 }
+  local mouse_pos = source_pos
+  local opened = false
+  local open_count = 0
+  local timers = {}
+  local mock_view = {
+    open = function()
+      opened = true
+      open_count = open_count + 1
+      return 1, 1
+    end,
+    close = function() opened = false end,
+    is_open = function() return opened end,
+    is_mouse_inside = function() return false end,
+    scroll = function() end,
+  }
+
+  local saved_getmousepos = vim.fn.getmousepos
+  local saved_new_timer = vim.uv.new_timer
+  local saved_schedule_wrap = vim.schedule_wrap
+  vim.fn.getmousepos = function() return vim.deepcopy(mouse_pos) end
+  vim.schedule_wrap = function(callback) return callback end
+  vim.uv.new_timer = function()
+    local timer = { closing = false }
+    function timer:start(_, _, callback) self.callback = callback end
+    function timer:stop() end
+    function timer:close() self.closing = true end
+    function timer:is_closing() return self.closing end
+    timers[#timers + 1] = timer
+    return timer
+  end
+
+  controller.setup({
+    timing = { hover_delay = 1, close_delay = 50 },
+    ui = {},
+    behavior = { close_on_move = true, close_on_insert = false, only_normal_buf = false },
+  }, mock_view, function()
+    return { lines = { 'hover' }, filetype = 'markdown' }
+  end)
+  controller.enable()
+  controller._trigger_hover(controller._make_mouse_key(source_pos))
+  local opens = open_count
+
+  mouse_pos = { winid = source_winid, line = 1, column = 9, screenrow = 1, screencol = 30 }
+  local timer_count = #timers
+  controller._on_mouse_move()
+  ok(opened, '移到行尾空白时旧 hover 不应立即关闭（留出移入浮窗的时间）')
+  local close_timer = timers[#timers]
+  ok(#timers == timer_count + 1 and close_timer.callback, '移到行尾空白应只启动延迟关闭，不启动新 hover 定时器')
+  close_timer.callback()
+  ok(not opened and open_count == opens, 'close_delay 到期后关闭，且行尾空白不会打开新 hover')
 
   controller.disable()
   vim.fn.getmousepos = saved_getmousepos

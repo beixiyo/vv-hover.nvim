@@ -47,10 +47,22 @@ local owned_mousemoveevent = nil
 local hover_augroup = nil
 local Mappings = require('vv-hover.mappings')
 
+---鼠标是否落在行尾之后的空白区
+---getmousepos 在文本之后返回 column = #line + 1；若放行，provider 会把它夹到行尾，
+---LSP 对行尾位置返回最后一个 token 的 hover，表现为右侧空白处也弹出浮窗
+---@param pos VVHover.MousePos
+---@return boolean
+local function is_past_text(pos)
+  if not vim.api.nvim_win_is_valid(pos.winid) then return false end
+  local buf = vim.api.nvim_win_get_buf(pos.winid)
+  local line = vim.api.nvim_buf_get_lines(buf, pos.line - 1, pos.line, false)[1]
+  return line ~= nil and pos.column > #line
+end
+
 ---@param pos VVHover.MousePos|nil
 ---@return boolean
 local function is_source_mouse_pos(pos)
-  return pos ~= nil and pos.winid ~= 0 and pos.line ~= 0 and pos.column ~= 0
+  return pos ~= nil and pos.winid ~= 0 and pos.line ~= 0 and pos.column ~= 0 and not is_past_text(pos)
 end
 
 ---@return VVHover.MousePos|nil
@@ -238,6 +250,22 @@ function M._on_mouse_move()
         close_timer:stop()
         close_timer:close()
         close_timer = nil
+      end
+      return
+    end
+
+    -- 仍在源码窗口、只是落在行尾之后的空白：不触发新 hover，旧 hover 与移到别处
+    -- 一样走 close_on_move 的延迟关闭，保留鼠标斜穿空白区移入浮窗的时间窗口
+    if raw_pos and raw_pos.winid ~= 0 and raw_pos.line ~= 0 and raw_pos.column ~= 0 then
+      request_scope:cancel()
+      if hover_timer then
+        hover_timer:stop()
+        hover_timer:close()
+        hover_timer = nil
+      end
+      last_mouse_key = nil
+      if active_hover_key and config.behavior.close_on_move then
+        M._schedule_close()
       end
       return
     end
