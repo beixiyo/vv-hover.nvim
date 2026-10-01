@@ -370,6 +370,28 @@ do
   ok(called_direction == 'down', '普通窗口滚轮调用 vv-utils.scroll.mouse')
   ok(called_win == vim.api.nvim_get_current_win(), '普通窗口滚轮传入当前窗口兜底')
 
+  -- 焦点在左窗、鼠标在右窗的行尾之后空白 / 空行上滚轮：必须滚右窗（鼠标所在窗口），不能退回焦点窗口
+  local left = vim.api.nvim_get_current_win()
+  vim.cmd('rightbelow vsplit')
+  local right = vim.api.nvim_get_current_win()
+  local rbuf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_win_set_buf(right, rbuf)
+  vim.api.nvim_buf_set_lines(rbuf, 0, -1, false, { 'short', '' })
+  vim.api.nvim_set_current_win(left)
+  local saved_getmousepos = vim.fn.getmousepos
+  ---@type any
+  local mock_fn = vim.fn
+  controller.enable()
+  for _, case in ipairs({ { line = 1, column = 30, name = '行尾之后的空白' }, { line = 2, column = 1, name = '空行' } }) do
+    called_win = nil
+    mock_fn.getmousepos = function() return { winid = right, line = case.line, column = case.column, screenrow = 1, screencol = 40 } end
+    controller._on_scroll('down')
+    ok(called_win == right, ('焦点在别处时，鼠标在%s上滚轮应滚鼠标所在窗口'):format(case.name))
+  end
+  controller.disable()
+  vim.fn.getmousepos = saved_getmousepos
+  vim.api.nvim_win_close(right, true)
+
   package.loaded['vv-utils.scroll'] = old_scroll
 end
 

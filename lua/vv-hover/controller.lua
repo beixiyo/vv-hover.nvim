@@ -316,7 +316,9 @@ function M._on_scroll(direction)
     return
   end
 
-  local pos = M._get_mouse_pos()
+  -- 滚轮只关心鼠标落在哪个窗口，必须用原始位置：_get_mouse_pos() 是 hover 的“有效源码位置”过滤，
+  -- 行尾之后的空白、空行、浮窗边框都会被它丢弃，从而退回到焦点窗口，滚错窗口
+  local pos = get_raw_mouse_pos()
   if view and view.is_open() and view.is_mouse_inside(pos) then
     view.scroll(direction)
     return
